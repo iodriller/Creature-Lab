@@ -15,7 +15,12 @@ from rich.table import Table
 from creature_lab import VERSION
 from creature_lab.controllers.sinusoid import sinusoid_targets
 from creature_lab.evolve import hill_climb
-from creature_lab.runs import DEFAULT_RUNS_DIR, new_run_id, resolve_trace_path, save_trace
+from creature_lab.runs import (
+    DEFAULT_RUNS_DIR,
+    new_run_id,
+    resolve_trace_path,
+    save_run,
+)
 from creature_lab.schema import CreatureSpec, EpisodeTrace, FrameState, TaskSpec
 
 app = typer.Typer(help="Minimal, visual, backend-agnostic creature simulation lab.")
@@ -114,11 +119,11 @@ def run(
     task_spec = _load_spec(task, TaskSpec)
 
     trace = _simulate(creature, task_spec, gui=gui)
-    trace_path = save_trace(trace, runs_dir=runs_dir)
+    run_dir = save_run(creature, trace, runs_dir=runs_dir)
 
     console.print(
         f"[green]done[/green] {creature.name!r} on {task_spec.name!r}: "
-        f"score={trace.score:.4f} ({len(trace.frames)} step(s)) -> {trace_path}"
+        f"score={trace.score:.4f} ({len(trace.frames)} step(s)) -> {run_dir}"
     )
 
 
@@ -145,9 +150,7 @@ def evolve(
     )
 
     best_trace = _simulate(result.best, task_spec)
-    trace_path = save_trace(best_trace, runs_dir=runs_dir)
-    run_dir = trace_path.parent
-    (run_dir / "best.json").write_text(result.best.model_dump_json(indent=2))
+    run_dir = save_run(result.best, best_trace, runs_dir=runs_dir)
 
     table = Table(title=f"{creature.name!r} lineage ({attempts} attempts, seed {seed})")
     table.add_column("attempt", justify="right")
@@ -177,6 +180,43 @@ def replay(
         f"{trace.task_name!r} via {trace.backend!r} — {len(trace.frames)} frame(s), "
         f"{duration:.2f}s, score={trace.score:.4f}"
     )
+
+
+@app.command()
+def view(
+    path: Annotated[Path, typer.Argument(help="Path to a trace.json file or run directory.")],
+    creature_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--creature", help="CreatureSpec JSON (defaults to creature.json in the run dir)."
+        ),
+    ] = None,
+    task: Annotated[
+        Path | None, typer.Option(help="Optional TaskSpec JSON to draw the target marker.")
+    ] = None,
+    fps: Annotated[float, typer.Option(help="Playback frames per second.")] = 30.0,
+    port: Annotated[int, typer.Option(help="Port for the Viser server.")] = 8080,
+) -> None:
+    """Replay a saved trace in a Viser browser viewer (renders poses, no physics)."""
+    trace = _load_spec(resolve_trace_path(path), EpisodeTrace)
+    if creature_path is None:
+        run_dir = path if path.is_dir() else path.parent
+        creature_path = run_dir / "creature.json"
+    creature = _load_spec(creature_path, CreatureSpec)
+    task_spec = _load_spec(task, TaskSpec) if task is not None else None
+
+    try:
+        from creature_lab.viewers.viser_viewer import play_trace
+    except ImportError as exc:
+        console.print(
+            "[red]error:[/red] viser is not installed. Install it with `uv sync --extra viz`."
+        )
+        raise typer.Exit(code=2) from exc
+
+    console.print(
+        f"[green]serving[/green] {trace.run_id!r} on http://localhost:{port} (Ctrl+C to stop)"
+    )
+    play_trace(creature, trace, task=task_spec, fps=fps, port=port)
 
 
 if __name__ == "__main__":

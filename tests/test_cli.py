@@ -90,5 +90,5 @@ def test_evolve_saves_best_creature(tmp_path):
     assert "best" in result.stdout
 
     [run_dir] = list(runs_dir.iterdir())
-    assert (run_dir / "best.json").exists()
+    assert (run_dir / "creature.json").exists()
     assert (run_dir / "trace.json").exists()

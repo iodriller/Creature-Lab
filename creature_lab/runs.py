@@ -10,7 +10,7 @@ import json
 import uuid
 from pathlib import Path
 
-from creature_lab.schema import EpisodeTrace
+from creature_lab.schema import CreatureSpec, EpisodeTrace
 
 DEFAULT_RUNS_DIR = Path("runs")
 
@@ -31,6 +31,20 @@ def save_trace(trace: EpisodeTrace, runs_dir: Path = DEFAULT_RUNS_DIR) -> Path:
     trace_path = run_dir / "trace.json"
     trace_path.write_text(trace.model_dump_json(indent=2))
     return trace_path
+
+
+def save_run(
+    creature: CreatureSpec, trace: EpisodeTrace, runs_dir: Path = DEFAULT_RUNS_DIR
+) -> Path:
+    """Save `creature.json` + `trace.json` under the run directory and return it.
+
+    Writing the creature alongside the trace makes a run self-describing, so the
+    viewer can render shapes from just the run directory.
+    """
+    trace_path = save_trace(trace, runs_dir=runs_dir)
+    run_dir = trace_path.parent
+    (run_dir / "creature.json").write_text(creature.model_dump_json(indent=2))
+    return run_dir
 
 
 def load_trace(path: Path) -> EpisodeTrace:
