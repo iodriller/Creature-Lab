@@ -55,14 +55,19 @@ uv run creature-lab evolve examples/tripod.json --task examples/crawl_forward.js
 uv run creature-lab replay runs/<run-id>
 ```
 
-`run` saves an episode trace under `runs/`, `evolve` hill-climbs from a seed creature and
-saves the best one, and `replay` summarizes a saved trace without re-running physics.
-
-Planned command shape (aspirational until their backends land):
+`run` saves a self-describing run (`creature.json` + `trace.json`) under `runs/`, `evolve`
+hill-climbs from a seed creature and saves the best one, and `replay` summarizes a saved
+trace without re-running physics.
 
 ```bash
-uv run creature-lab demo   # live Viser browser viewer
+# Browser replay viewer needs the optional Viser dependency.
+uv sync --extra viz
+uv run creature-lab view runs/<run-id>   # animates the recorded poses in a browser
 ```
+
+`view` renders recorded poses only — it never re-runs physics, matching the project's
+"replays are portable, exact physics is backend-dependent" promise. Install everything with
+`uv sync --all-extras`.
 
 ## Development principle
 

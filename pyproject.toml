@@ -19,6 +19,9 @@ sim = [
     "pybullet>=3.2.6",
     "numpy>=1.26",  # pybullet imports numpy at runtime but does not pin it
 ]
+viz = [
+    "viser>=1.0",
+]
 
 [project.scripts]
 creature-lab = "creature_lab.cli:app"
