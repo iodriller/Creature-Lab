@@ -5,15 +5,9 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
-Vector3 = tuple[float, float, float]
-ColorRGB = tuple[float, float, float]
-JointLimit = tuple[float, float]
-
-
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+from creature_lab.schema.base import ColorRGB, JointLimit, StrictModel, Vector3
 
 
 class ShapeType(StrEnum):
@@ -65,13 +59,21 @@ class PartSpec(StrictModel):
 
     @model_validator(mode="after")
     def validate_dimensions(self) -> PartSpec:
-        if self.shape == ShapeType.BOX and self.size is None:
-            raise ValueError("box parts require size")
-        if self.shape == ShapeType.SPHERE and self.radius is None:
-            raise ValueError("sphere parts require radius")
-        if self.shape in {ShapeType.CAPSULE, ShapeType.CYLINDER}:
+        if self.shape == ShapeType.BOX:
+            if self.size is None:
+                raise ValueError("box parts require size")
+            if self.radius is not None or self.length is not None:
+                raise ValueError("box parts must not set radius or length")
+        elif self.shape == ShapeType.SPHERE:
+            if self.radius is None:
+                raise ValueError("sphere parts require radius")
+            if self.size is not None or self.length is not None:
+                raise ValueError("sphere parts must not set size or length")
+        elif self.shape in {ShapeType.CAPSULE, ShapeType.CYLINDER}:
             if self.radius is None or self.length is None:
                 raise ValueError("capsule and cylinder parts require radius and length")
+            if self.size is not None:
+                raise ValueError("capsule and cylinder parts must not set size")
         return self
 
 
@@ -164,13 +166,19 @@ class CreatureSpec(StrictModel):
             raise ValueError("creatures must have exactly one root part")
         self._validate_reachable_acyclic(roots[0], adjacency, part_id_set)
         known_joints = set(joint_ids)
+        motor_joints: set[str] = set()
         for motor in self.motors:
             if motor.joint not in known_joints:
                 raise ValueError(f"motor references unknown joint {motor.joint!r}")
+            if motor.joint in motor_joints:
+                raise ValueError(f"joint {motor.joint!r} has more than one motor")
+            motor_joints.add(motor.joint)
         return self
 
     @staticmethod
-    def _validate_reachable_acyclic(root: str, adjacency: dict[str, list[str]], all_parts: set[str]) -> None:
+    def _validate_reachable_acyclic(
+        root: str, adjacency: dict[str, list[str]], all_parts: set[str]
+    ) -> None:
         visited: set[str] = set()
         visiting: set[str] = set()
 
