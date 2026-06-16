@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
-Vector3 = tuple[float, float, float]
-Quaternion = tuple[float, float, float, float]
-
-
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+from creature_lab.schema.base import Quaternion, StrictModel, Vector3
 
 
 class PartPose(StrictModel):
     position: Vector3
+    #: Orientation as a scalar-first quaternion ``(w, x, y, z)``; identity by default.
     orientation: Quaternion = (1.0, 0.0, 0.0, 0.0)
 
 
@@ -37,7 +33,7 @@ class FrameState(StrictModel):
     parts: dict[str, PartPose]
     joint_angles: dict[str, float] = Field(default_factory=dict)
     contacts: list[ContactSpec] = Field(default_factory=list)
-    score: float = 0.0
+    score: float = Field(default=0.0, allow_inf_nan=False)
     events: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -52,7 +48,7 @@ class EpisodeTrace(StrictModel):
     creature_name: str = Field(min_length=1)
     task_name: str = Field(min_length=1)
     backend: str = Field(min_length=1)
-    score: float
+    score: float = Field(allow_inf_nan=False)
     frames: list[FrameState] = Field(min_length=1)
 
     @field_validator("run_id", "creature_name", "task_name", "backend")

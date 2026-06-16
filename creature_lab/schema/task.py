@@ -4,13 +4,9 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
-Vector3 = tuple[float, float, float]
-
-
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+from creature_lab.schema.base import StrictModel, Vector3
 
 
 class TerrainType(StrEnum):
@@ -75,4 +71,6 @@ class TaskSpec(StrictModel):
             raise ValueError("task timestep must not exceed duration")
         if self.damage_event is not None and self.damage_event.time >= self.duration:
             raise ValueError("damage event time must be before task duration")
+        if self.target is None and self.reward.target_distance != 0.0:
+            raise ValueError("reward.target_distance requires a task target")
         return self
