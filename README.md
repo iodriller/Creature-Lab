@@ -41,15 +41,33 @@ The durable rule:
 
 The first lovable demo should let a user run a command, open a local browser viewer, and watch a small modular creature try to crawl toward a target while the run is saved as replay data.
 
-Planned command shape:
+Available today:
 
 ```bash
-uv run creature-lab demo
-uv run creature-lab run examples/tripod.json --task crawl
-uv run creature-lab replay runs/latest
+# Core install (schemas + validate).
+uv sync
+uv run creature-lab validate examples/tripod.json
+
+# Physics commands need the optional PyBullet backend.
+uv sync --extra sim
+uv run creature-lab run examples/tripod.json --task examples/crawl_forward.json
+uv run creature-lab evolve examples/tripod.json --task examples/crawl_forward.json --attempts 20 --seed 0
+uv run creature-lab replay runs/<run-id>
 ```
 
-These commands are aspirational until implementation begins.
+`run` saves a self-describing run (`creature.json` + `trace.json`) under `runs/`, `evolve`
+hill-climbs from a seed creature and saves the best one, and `replay` summarizes a saved
+trace without re-running physics.
+
+```bash
+# Browser replay viewer needs the optional Viser dependency.
+uv sync --extra viz
+uv run creature-lab view runs/<run-id>   # animates the recorded poses in a browser
+```
+
+`view` renders recorded poses only — it never re-runs physics, matching the project's
+"replays are portable, exact physics is backend-dependent" promise. Install everything with
+`uv sync --all-extras`.
 
 ## Development principle
 
