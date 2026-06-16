@@ -1,2 +1,0 @@
-class CreatureSpec:
-    pass

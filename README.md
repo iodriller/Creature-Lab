@@ -41,15 +41,20 @@ The durable rule:
 
 The first lovable demo should let a user run a command, open a local browser viewer, and watch a small modular creature try to crawl toward a target while the run is saved as replay data.
 
-Planned command shape:
+Available today:
+
+```bash
+uv sync
+uv run creature-lab validate examples/tripod.json
+```
+
+Planned command shape (aspirational until their backends land):
 
 ```bash
 uv run creature-lab demo
 uv run creature-lab run examples/tripod.json --task crawl
 uv run creature-lab replay runs/latest
 ```
-
-These commands are aspirational until implementation begins.
 
 ## Development principle
 
