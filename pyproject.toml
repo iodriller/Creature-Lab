@@ -16,6 +16,9 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
 ]
+sim = [
+    "pybullet>=3.2.6",
+]
 
 [project.scripts]
 creature-lab = "creature_lab.cli:app"

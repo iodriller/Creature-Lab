@@ -3,12 +3,15 @@
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from creature_lab.cli import app
 
 runner = CliRunner()
-EXAMPLE = Path(__file__).resolve().parent.parent / "examples" / "tripod.json"
+EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
+EXAMPLE = EXAMPLES / "tripod.json"
+TASK = EXAMPLES / "crawl_forward.json"
 
 
 def test_version():
@@ -33,7 +36,7 @@ def test_validate_invalid_creature(tmp_path):
     bad.write_text(json.dumps({"name": "x"}))  # missing parts
     result = runner.invoke(app, ["validate", str(bad)])
     assert result.exit_code == 1
-    assert "invalid creature" in result.stdout
+    assert "invalid CreatureSpec" in result.stdout
 
 
 def test_validate_malformed_json(tmp_path):
@@ -42,3 +45,10 @@ def test_validate_malformed_json(tmp_path):
     result = runner.invoke(app, ["validate", str(bad)])
     assert result.exit_code == 1
     assert "invalid JSON" in result.stdout
+
+
+def test_run_example_episode():
+    pytest.importorskip("pybullet")
+    result = runner.invoke(app, ["run", str(EXAMPLE), "--task", str(TASK)])
+    assert result.exit_code == 0, result.stdout
+    assert "score=" in result.stdout
