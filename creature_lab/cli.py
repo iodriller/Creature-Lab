@@ -16,7 +16,8 @@ from rich.console import Console
 
 from creature_lab import VERSION
 from creature_lab.controllers.sinusoid import sinusoid_targets
-from creature_lab.schema import CreatureSpec, TaskSpec
+from creature_lab.runs import DEFAULT_RUNS_DIR, new_run_id, save_trace
+from creature_lab.schema import CreatureSpec, EpisodeTrace, FrameState, TaskSpec
 
 app = typer.Typer(help="Minimal, visual, backend-agnostic creature simulation lab.")
 console = Console()
@@ -69,8 +70,11 @@ def run(
     creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
     task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
     gui: Annotated[bool, typer.Option(help="Open a PyBullet GUI window.")] = False,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory to save the episode trace under.")
+    ] = DEFAULT_RUNS_DIR,
 ) -> None:
-    """Run a short PyBullet episode and print the final score."""
+    """Run a short PyBullet episode, save its trace, and print the final score."""
     try:
         from creature_lab.backends.pybullet_backend import PyBulletBackend
     except ImportError as exc:
@@ -86,21 +90,46 @@ def run(
     try:
         backend.build(creature, task_spec)
         steps = int(task_spec.duration / task_spec.timestep)
-        frame = None
+        frames: list[FrameState] = []
         for step_index in range(steps):
             t = step_index * task_spec.timestep
             backend.apply_motor_targets(sinusoid_targets(creature, t))
-            frame = backend.step(task_spec.timestep)
+            frames.append(backend.step(task_spec.timestep))
     finally:
         backend.close()
 
-    if frame is None:
+    if not frames:
         console.print("[yellow]warning:[/yellow] task duration too short to run any steps")
         raise typer.Exit(code=1)
 
+    trace = EpisodeTrace(
+        run_id=new_run_id(),
+        creature_name=creature.name,
+        task_name=task_spec.name,
+        backend="pybullet",
+        score=frames[-1].score,
+        frames=frames,
+    )
+    trace_path = save_trace(trace, runs_dir=runs_dir)
+
     console.print(
         f"[green]done[/green] {creature.name!r} on {task_spec.name!r}: "
-        f"score={frame.score:.4f} ({steps} step(s))"
+        f"score={trace.score:.4f} ({len(frames)} step(s)) -> {trace_path}"
+    )
+
+
+@app.command()
+def replay(
+    path: Annotated[Path, typer.Argument(help="Path to a trace.json file or run directory.")],
+) -> None:
+    """Print a summary of a saved episode trace."""
+    trace_file = path / "trace.json" if path.is_dir() else path
+    trace = _load_spec(trace_file, EpisodeTrace)
+    duration = trace.frames[-1].t - trace.frames[0].t
+    console.print(
+        f"[green]trace[/green] {trace.run_id!r}: {trace.creature_name!r} on "
+        f"{trace.task_name!r} via {trace.backend!r} — {len(trace.frames)} frame(s), "
+        f"{duration:.2f}s, score={trace.score:.4f}"
     )
 
 
