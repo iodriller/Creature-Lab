@@ -50,6 +50,14 @@ def _load_spec(path: Path, model: type[ModelT]) -> ModelT:
         raise typer.Exit(code=1) from exc
 
 
+def _load_creature_for_trace(path: Path, creature_path: Path | None) -> CreatureSpec:
+    """Load the creature for a trace, defaulting to creature.json in the run directory."""
+    if creature_path is None:
+        run_dir = path if path.is_dir() else path.parent
+        creature_path = run_dir / "creature.json"
+    return _load_spec(creature_path, CreatureSpec)
+
+
 def _simulate(creature: CreatureSpec, task: TaskSpec, *, gui: bool = False) -> EpisodeTrace:
     """Run one PyBullet episode and return its trace (without saving)."""
     try:
@@ -199,10 +207,7 @@ def view(
 ) -> None:
     """Replay a saved trace in a Viser browser viewer (renders poses, no physics)."""
     trace = _load_spec(resolve_trace_path(path), EpisodeTrace)
-    if creature_path is None:
-        run_dir = path if path.is_dir() else path.parent
-        creature_path = run_dir / "creature.json"
-    creature = _load_spec(creature_path, CreatureSpec)
+    creature = _load_creature_for_trace(path, creature_path)
     task_spec = _load_spec(task, TaskSpec) if task is not None else None
 
     try:
@@ -217,6 +222,45 @@ def view(
         f"[green]serving[/green] {trace.run_id!r} on http://localhost:{port} (Ctrl+C to stop)"
     )
     play_trace(creature, trace, task=task_spec, fps=fps, port=port)
+
+
+@app.command()
+def export(
+    path: Annotated[Path, typer.Argument(help="Path to a trace.json file or run directory.")],
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output .gif or .mp4 path.")],
+    creature_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--creature", help="CreatureSpec JSON (defaults to creature.json in the run dir)."
+        ),
+    ] = None,
+    fps: Annotated[float, typer.Option(help="Frames per second in the output.")] = 30.0,
+    width: Annotated[int, typer.Option(help="Render width in pixels.")] = 640,
+    height: Annotated[int, typer.Option(help="Render height in pixels.")] = 480,
+) -> None:
+    """Render a saved trace to a shareable GIF or MP4 (replays poses, no physics)."""
+    trace = _load_spec(resolve_trace_path(path), EpisodeTrace)
+    creature = _load_creature_for_trace(path, creature_path)
+
+    try:
+        from creature_lab.backends.pybullet_backend import render_trace
+    except ImportError as exc:
+        console.print(
+            "[red]error:[/red] pybullet is not installed. Install it with `uv sync --extra sim`."
+        )
+        raise typer.Exit(code=2) from exc
+
+    try:
+        from creature_lab.viewers.video_exporter import write_animation
+    except ImportError as exc:
+        console.print(
+            "[red]error:[/red] imageio is not installed. Install it with `uv sync --extra export`."
+        )
+        raise typer.Exit(code=2) from exc
+
+    frames = render_trace(creature, trace, width=width, height=height)
+    out_path = write_animation(frames, out, fps=fps)
+    console.print(f"[green]exported[/green] {len(frames)} frame(s) -> {out_path}")
 
 
 if __name__ == "__main__":

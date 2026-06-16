@@ -63,11 +63,15 @@ trace without re-running physics.
 # Browser replay viewer needs the optional Viser dependency.
 uv sync --extra viz
 uv run creature-lab view runs/<run-id>   # animates the recorded poses in a browser
+
+# GIF/MP4 export needs the optional imageio dependencies (plus the sim renderer).
+uv sync --extra sim --extra export
+uv run creature-lab export runs/<run-id> --out tripod.gif   # or --out clip.mp4
 ```
 
-`view` renders recorded poses only — it never re-runs physics, matching the project's
-"replays are portable, exact physics is backend-dependent" promise. Install everything with
-`uv sync --all-extras`.
+`view` and `export` render recorded poses only — they never re-run physics, matching the
+project's "replays are portable, exact physics is backend-dependent" promise. Install
+everything with `uv sync --all-extras`.
 
 ## Development principle
 
