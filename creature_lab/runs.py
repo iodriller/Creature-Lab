@@ -19,6 +19,11 @@ def new_run_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def resolve_trace_path(path: Path) -> Path:
+    """Return the `trace.json` path for a run directory, or `path` unchanged."""
+    return path / "trace.json" if path.is_dir() else path
+
+
 def save_trace(trace: EpisodeTrace, runs_dir: Path = DEFAULT_RUNS_DIR) -> Path:
     """Save a trace to `<runs_dir>/<run_id>/trace.json` and return that path."""
     run_dir = runs_dir / trace.run_id
@@ -30,5 +35,4 @@ def save_trace(trace: EpisodeTrace, runs_dir: Path = DEFAULT_RUNS_DIR) -> Path:
 
 def load_trace(path: Path) -> EpisodeTrace:
     """Load a trace from a `trace.json` file or a run directory containing one."""
-    trace_path = path / "trace.json" if path.is_dir() else path
-    return EpisodeTrace.model_validate(json.loads(trace_path.read_text()))
+    return EpisodeTrace.model_validate(json.loads(resolve_trace_path(path).read_text()))

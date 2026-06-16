@@ -44,16 +44,24 @@ The first lovable demo should let a user run a command, open a local browser vie
 Available today:
 
 ```bash
+# Core install (schemas + validate).
 uv sync
 uv run creature-lab validate examples/tripod.json
+
+# Physics commands need the optional PyBullet backend.
+uv sync --extra sim
+uv run creature-lab run examples/tripod.json --task examples/crawl_forward.json
+uv run creature-lab evolve examples/tripod.json --task examples/crawl_forward.json --attempts 20 --seed 0
+uv run creature-lab replay runs/<run-id>
 ```
+
+`run` saves an episode trace under `runs/`, `evolve` hill-climbs from a seed creature and
+saves the best one, and `replay` summarizes a saved trace without re-running physics.
 
 Planned command shape (aspirational until their backends land):
 
 ```bash
-uv run creature-lab demo
-uv run creature-lab run examples/tripod.json --task crawl
-uv run creature-lab replay runs/latest
+uv run creature-lab demo   # live Viser browser viewer
 ```
 
 ## Development principle
