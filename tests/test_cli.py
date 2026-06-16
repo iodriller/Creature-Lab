@@ -47,8 +47,22 @@ def test_validate_malformed_json(tmp_path):
     assert "invalid JSON" in result.stdout
 
 
-def test_run_example_episode():
+def test_run_saves_a_replayable_trace(tmp_path):
     pytest.importorskip("pybullet")
-    result = runner.invoke(app, ["run", str(EXAMPLE), "--task", str(TASK)])
+    runs_dir = tmp_path / "runs"
+    result = runner.invoke(
+        app, ["run", str(EXAMPLE), "--task", str(TASK), "--runs-dir", str(runs_dir)]
+    )
     assert result.exit_code == 0, result.stdout
     assert "score=" in result.stdout
+
+    [run_dir] = list(runs_dir.iterdir())
+    replay_result = runner.invoke(app, ["replay", str(run_dir)])
+    assert replay_result.exit_code == 0, replay_result.stdout
+    assert "tripod" in replay_result.stdout
+    assert "crawl_forward" in replay_result.stdout
+
+
+def test_replay_missing_trace(tmp_path):
+    result = runner.invoke(app, ["replay", str(tmp_path)])
+    assert result.exit_code == 2
