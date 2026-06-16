@@ -85,16 +85,22 @@ by probing the live models, all fixed.
 
 ## ⏳ Larger gaps (unbuilt MVP phases — tracked, not yet built)
 
-Expected for a bootstrap repo, listed here against `docs/MVP_PLAN.md`:
+Listed here against `docs/MVP_PLAN.md`; later commits closed most of them.
 
-- **G9** — No backend protocol or PyBullet adapter (Phase 3).
-- **G10** — No controllers / sinusoid target generation (Phase 2).
-- **G11** — No trace writer/reader (Phase 2).
-- **G12** — No Viser live viewer (Phase 4); no replay/export (Phase 5).
-- **G13** — No baseline mutator (Phase 6); no LLM tool loop or `AgentTrace` schema (Phase 7).
-- **G14** — `numpy`/`rich` are declared dependencies but not yet used.
-- **G15** — Acyclicity check is recursive (`creature.py`); fine for the MVP, but an iterative
+- **G9** ✅ — Backend protocol (`backends/base.py`) and PyBullet adapter
+  (`backends/pybullet_backend.py`) added (Phase 3). PyBullet is an optional `sim` extra.
+- **G10** ✅ — Sinusoid controller added (`controllers/sinusoid.py`, Phase 2).
+- **G11** ✅ — Trace writer/reader added (`runs.py`) with a `run` + `replay` CLI (Phase 2/5).
+- **G12** ⏳ — No Viser live viewer yet (Phase 4); no GIF/MP4 export (Phase 5). `replay`
+  currently prints a text summary rather than rendering frames.
+- **G13** ✅/⏳ — Baseline mutator + hill-climb (`evolve.py`, `evolve` command) added (Phase 6).
+  The LLM tool loop and a dedicated `AgentTrace` schema (Phase 7) are still pending.
+- **G14** ✅ — Removed the unused `numpy` dependency; `rich` is now used by the CLI.
+- **G15** ⏳ — Acyclicity check is recursive (`creature.py`); fine for the MVP, but an iterative
   DFS would avoid Python's recursion limit on very deep creatures.
+- **G16** ⏳ — Scoring only implements `reward.forward_distance`; `target_distance`,
+  `energy_penalty`, and `fall_penalty` are accepted by the schema but not yet computed by the
+  PyBullet backend.
 
 ---
 
@@ -104,8 +110,9 @@ No viewer exists yet, so today's highest-leverage UX is onboarding/DX:
 
 - **U1** — `validate` is now the first real command and surfaces friendly, Rich-rendered
   errors instead of raw Pydantic dumps. It is the cheapest "clone → run → it works" win.
-- **U2** — The headline path now works: `uv sync` succeeds, the valid example validates, and
-  `uv run creature-lab validate examples/tripod.json` prints a readable result.
+- **U2** — The headline path now works: `uv sync` succeeds, the valid example validates,
+  `run` simulates and saves a trace, `replay` reads it back, and `evolve` hill-climbs and
+  prints a Rich lineage table.
 - **U3 (future)** — For the Viser viewer, keep the plan's floor grid / target marker / score
   panel / contact markers / motion trail, and add a visible "physics is backend-dependent"
   disclaimer plus a deterministic-seed display to honor the portability promise.

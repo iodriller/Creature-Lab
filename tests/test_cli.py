@@ -66,3 +66,29 @@ def test_run_saves_a_replayable_trace(tmp_path):
 def test_replay_missing_trace(tmp_path):
     result = runner.invoke(app, ["replay", str(tmp_path)])
     assert result.exit_code == 2
+
+
+def test_evolve_saves_best_creature(tmp_path):
+    pytest.importorskip("pybullet")
+    runs_dir = tmp_path / "runs"
+    result = runner.invoke(
+        app,
+        [
+            "evolve",
+            str(EXAMPLE),
+            "--task",
+            str(TASK),
+            "--attempts",
+            "2",
+            "--seed",
+            "0",
+            "--runs-dir",
+            str(runs_dir),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "best" in result.stdout
+
+    [run_dir] = list(runs_dir.iterdir())
+    assert (run_dir / "best.json").exists()
+    assert (run_dir / "trace.json").exists()
