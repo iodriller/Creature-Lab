@@ -63,6 +63,18 @@ def test_cycle_is_rejected():
         CreatureSpec.model_validate(spec)
 
 
+def test_deep_chain_validates_without_recursion_error():
+    # Far deeper than Python's default recursion limit; the iterative DFS must cope.
+    n = 5000
+    parts = [{"id": f"p{i}", "shape": "box", "size": [1, 1, 1], "mass": 1.0} for i in range(n)]
+    joints = [
+        {"id": f"j{i}", "parent": f"p{i}", "child": f"p{i + 1}", "type": "fixed"}
+        for i in range(n - 1)
+    ]
+    spec = CreatureSpec.model_validate({"name": "snake", "parts": parts, "joints": joints})
+    assert len(spec.parts) == n
+
+
 def test_motor_must_reference_known_joint():
     bad = _two_part_creature(motors=[{"joint": "nope", "amplitude": 0.5, "frequency": 1.0}])
     with pytest.raises(ValidationError, match="unknown joint"):
