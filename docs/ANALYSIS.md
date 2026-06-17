@@ -147,6 +147,13 @@ A second pass that ran the whole pipeline and read every module. Findings:
 - **G23 ✅ — Step count is FP-robust.** `TaskSpec.step_count()` uses rounding (min 1) instead
   of truncating `duration / timestep`, so float error can no longer silently drop the final
   step; the CLI and tests use it.
+- **G24 ✅ — Contacts were defined but never reported.** `FrameState.contacts` /
+  `ContactSpec` existed in the schema (and the plan's viewer wishlist), but the PyBullet
+  backend always left `contacts` empty. The backend now reports ground contacts each step
+  (part id, world position, normal, and clamped normal force) via `getContactPoints`, so
+  traces carry real contact data. A backend test confirms a settled creature reports foot
+  contacts. (Drawing contact markers in the Viser viewer is a natural follow-up now that the
+  data exists.)
 
-Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (72 tests)
+Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (73 tests)
 all green, and the full CLI loop (`validate → run → replay → export → evolve → demo`) works.
