@@ -77,7 +77,24 @@ uv run creature-lab export runs/<run-id> --out tripod.gif   # or --out clip.mp4
 streams the simulation to the browser live, then saves the run. `view` and `export` render
 recorded poses only — they never re-run physics, matching the
 project's "replays are portable, exact physics is backend-dependent" promise. Install
-everything with `uv sync --all-extras`.
+everything with `uv sync --all-extras`. For headless use (CI, screenshots), `demo --no-hold`
+streams one pass, saves the run, and exits instead of serving until interrupted.
+
+## Testing
+
+```bash
+uv sync --all-extras
+uv run pytest          # unit + schema tests, plus end-to-end CLI scenarios
+uv run ruff check .
+uv run ruff format --check .
+```
+
+Tests come in two tiers: fast unit/schema tests, and end-to-end scenarios
+(`tests/test_end_to_end.py`) that drive the CLI through full pipelines
+(`run → replay → export`, every example task, live `demo`, and `evolve → export`)
+and assert the on-disk artifacts. Tests that need an optional backend
+(`pybullet`/`viser`/`imageio`) skip automatically when it is absent; CI installs
+all extras so the whole pipeline runs.
 
 ## Development principle
 
