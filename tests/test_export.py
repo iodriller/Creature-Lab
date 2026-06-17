@@ -80,3 +80,7 @@ def test_render_trace_produces_rgb_frames():
     images = render_trace(creature, trace, width=64, height=48)
     assert len(images) == len(trace.frames)
     assert images[0].shape == (48, 64, 3)
+
+    # Odd dimensions are rounded up to even so MP4 (libx264) stays valid.
+    odd = render_trace(creature, trace, width=65, height=49)
+    assert odd[0].shape == (50, 66, 3)

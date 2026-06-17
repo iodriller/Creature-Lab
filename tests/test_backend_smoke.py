@@ -99,3 +99,60 @@ def test_damage_event_fires_once(backend):
     damage_frames = [frame for frame in frames if frame.events]
     assert len(damage_frames) == 1
     assert damage_frames[0].events == ["damage:leg_a"]
+
+
+def test_reset_reruns_from_the_start(backend):
+    creature = CreatureSpec.model_validate(TRIPOD)
+    task = TaskSpec.model_validate({"name": "t", "duration": 0.2, "timestep": 1 / 60})
+
+    first = _run_episode(backend, creature, task)
+    backend.reset()
+    second_first_frame = backend.step(task.timestep)
+
+    # After reset the clock restarts near zero rather than continuing from the
+    # end of the previous episode.
+    assert second_first_frame.t < first[-1].t
+
+
+def test_backend_satisfies_protocol():
+    from creature_lab.backends.base import SimBackend
+    from creature_lab.backends.pybullet_backend import PyBulletBackend
+
+    instance = PyBulletBackend()
+    try:
+        assert isinstance(instance, SimBackend)
+    finally:
+        instance.close()
+
+
+def test_rest_orientation_orients_child_link(backend):
+    # 90 degrees about X, scalar-first (w, x, y, z).
+    half = math.sqrt(0.5)
+    creature = CreatureSpec.model_validate(
+        {
+            "name": "bent",
+            "parts": [
+                {"id": "torso", "shape": "box", "size": [0.4, 0.2, 0.1], "mass": 1.0},
+                {"id": "arm", "shape": "capsule", "length": 0.3, "radius": 0.04, "mass": 0.2},
+            ],
+            "joints": [
+                {
+                    "id": "j",
+                    "parent": "torso",
+                    "child": "arm",
+                    "type": "fixed",
+                    "rest_orientation": [half, half, 0.0, 0.0],
+                }
+            ],
+        }
+    )
+    task = TaskSpec.model_validate({"name": "t", "duration": 0.2, "timestep": 1 / 60})
+
+    backend.build(creature, task)
+    frame = backend._read_frame()  # initial pose, before stepping
+
+    orientation = frame.parts["arm"].orientation
+    # A quaternion and its negation represent the same rotation; canonicalize on w >= 0.
+    if orientation[0] < 0:
+        orientation = tuple(-component for component in orientation)
+    assert orientation == pytest.approx((half, half, 0.0, 0.0), abs=1e-4)

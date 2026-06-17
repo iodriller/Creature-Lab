@@ -51,13 +51,16 @@ uv run creature-lab validate examples/tripod.json
 # Physics commands need the optional PyBullet backend.
 uv sync --extra sim
 uv run creature-lab run examples/tripod.json --task examples/crawl_forward.json
+uv run creature-lab run examples/tripod.json --task examples/reach_target.json
 uv run creature-lab evolve examples/tripod.json --task examples/crawl_forward.json --attempts 20 --seed 0
 uv run creature-lab replay runs/<run-id>
 ```
 
 `run` saves a self-describing run (`creature.json` + `trace.json`) under `runs/`, `evolve`
 hill-climbs from a seed creature and saves the best one, and `replay` summarizes a saved
-trace without re-running physics.
+trace without re-running physics. Tasks score with a weighted blend of forward distance,
+progress toward a target, energy use, and a fall penalty (see `examples/*.json`). Joints take
+an optional `rest_orientation` quaternion so limbs can be angled, not just axis-aligned.
 
 ```bash
 # Live browser viewer needs the optional Viser dependency (plus the sim backend).
