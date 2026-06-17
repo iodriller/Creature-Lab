@@ -153,6 +153,12 @@ A second pass that ran the whole pipeline and read every module. Findings:
   (part id, world position, normal, clamped normal force) via `getContactPoints`, and the Viser
   viewer draws them as a pooled set of red markers shown/hidden per frame. Backend and viewer
   tests cover both ends.
+- **G25 ✅ — No full-pipeline coverage.** Added `tests/test_end_to_end.py`: scenario tests that
+  drive the CLI through complete pipelines (`run → replay → export`, every example task, live
+  `demo`, and `evolve → export`) and assert the on-disk artifacts — exercising the real backend,
+  trace I/O, viewer, and exporter together. To make the interactive viewer testable, `demo`
+  gained `--no-hold` (stream one pass, save, exit), also useful for headless/CI runs.
 
-Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (73 tests)
-all green, and the full CLI loop (`validate → run → replay → export → evolve → demo`) works.
+Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (79 tests,
+including 6 end-to-end scenarios) all green, and the full CLI loop
+(`validate → run → replay → export → evolve → demo`) works.
