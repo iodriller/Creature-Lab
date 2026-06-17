@@ -157,6 +157,9 @@ def demo(
     fps: Annotated[float, typer.Option(help="Playback frames per second.")] = 60.0,
     port: Annotated[int, typer.Option(help="Port for the Viser server.")] = 8080,
     save: Annotated[bool, typer.Option(help="Save the streamed episode as a trace.")] = True,
+    hold: Annotated[
+        bool, typer.Option(help="Keep serving and looping after the run (Ctrl+C to stop).")
+    ] = True,
     runs_dir: Annotated[
         Path, typer.Option(help="Directory to save the episode trace under.")
     ] = DEFAULT_RUNS_DIR,
@@ -192,7 +195,7 @@ def demo(
     console.print(
         f"[green]serving[/green] {creature.name!r} on http://localhost:{port} (Ctrl+C to stop)"
     )
-    frames = stream_frames(creature, live_frames(), task=task_spec, fps=fps, port=port)
+    frames = stream_frames(creature, live_frames(), task=task_spec, fps=fps, port=port, hold=hold)
 
     if save and frames:
         run_dir = save_run(creature, _trace_from_frames(creature, task_spec, frames), runs_dir)
