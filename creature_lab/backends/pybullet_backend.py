@@ -1,10 +1,9 @@
 """PyBullet implementation of the SimBackend protocol.
 
-Only this module may import pybullet. Joint anchors are interpreted as the
-pivot position in the parent part's local frame, with the child part's
-origin placed at the pivot (no additional child offset) — the simplest
-convention that satisfies docs/MVP_PLAN.md without inventing extra schema
-fields.
+Only this module may import pybullet. A joint's ``anchor`` is the child link's
+origin in the parent's local frame, and its ``rest_orientation`` is the child's
+resting orientation relative to the parent (so limbs can be angled, not just
+axis-aligned).
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ import pybullet_data
 from creature_lab.schema import CreatureSpec, PartPose, PartSpec, ShapeType, TaskSpec
 from creature_lab.schema.creature import JointType
 from creature_lab.schema.trace import EpisodeTrace, FrameState
+from creature_lab.scoring import episode_score
 
 _DEFAULT_COLOR = (0.6, 0.6, 0.6)
 _DEFAULT_HINGE_LIMIT = (-math.pi, math.pi)
@@ -62,6 +62,8 @@ class PyBulletBackend:
         self._damaged_parts: set[str] = set()
         self._t = 0.0
         self._initial_root_x = 0.0
+        self._initial_target_distance = 0.0
+        self._energy = 0.0
         self._damage_fired = False
 
     def build(self, creature: CreatureSpec, task: TaskSpec) -> None:
@@ -75,12 +77,16 @@ class PyBulletBackend:
         )
         self._build_body(creature)
         self._t = 0.0
+        self._energy = 0.0
         self._damaged_parts.clear()
         self._damage_fired = False
         base_position, _ = pybullet.getBasePositionAndOrientation(
             self._body_id, physicsClientId=self._client
         )
         self._initial_root_x = base_position[0]
+        self._initial_target_distance = (
+            math.dist(base_position, task.target.position) if task.target is not None else 0.0
+        )
 
     def reset(self) -> None:
         if self._creature is None or self._task is None:
@@ -99,10 +105,21 @@ class PyBulletBackend:
             events.append(f"damage:{damage_event.part_id}")
         pybullet.setTimeStep(dt, physicsClientId=self._client)
         pybullet.stepSimulation(physicsClientId=self._client)
+        self._accumulate_energy(dt)
         frame = self._read_frame()
         if events:
             frame = frame.model_copy(update={"events": events})
         return frame
+
+    def _accumulate_energy(self, dt: float) -> None:
+        # Proxy for actuation effort: integral of squared hinge-joint speed.
+        for joint in self._creature.joints:
+            if joint.type != JointType.HINGE:
+                continue
+            velocity = pybullet.getJointState(
+                self._body_id, self._joint_link[joint.id], physicsClientId=self._client
+            )[1]
+            self._energy += velocity * velocity * dt
 
     def apply_motor_targets(self, targets: dict[str, float]) -> None:
         if self._creature is None or self._body_id is None:
@@ -223,7 +240,9 @@ class PyBulletBackend:
             link_collision_shapes.append(collision)
             link_visual_shapes.append(visual)
             link_positions.append(list(joint.anchor))
-            link_orientations.append([0.0, 0.0, 0.0, 1.0])
+            # Schema stores scalar-first (w, x, y, z); PyBullet wants (x, y, z, w).
+            w, qx, qy, qz = joint.rest_orientation
+            link_orientations.append([qx, qy, qz, w])
             link_inertial_positions.append([0.0, 0.0, 0.0])
             link_inertial_orientations.append([0.0, 0.0, 0.0, 1.0])
             # PyBullet's multi-body parent indices are 1-based; 0 means the base.
@@ -290,7 +309,19 @@ class PyBulletBackend:
             joint_angles[joint.id] = joint_state[0]
 
         forward_distance = base_position[0] - self._initial_root_x
-        score = self._task.reward.forward_distance * forward_distance
+        target_progress = 0.0
+        if self._task.target is not None:
+            current_distance = math.dist(base_position, self._task.target.position)
+            target_progress = self._initial_target_distance - current_distance
+        # Body's local +z expressed in world coordinates; small z-component => toppled.
+        body_up_z = pybullet.getMatrixFromQuaternion(base_orientation)[8]
+        score = episode_score(
+            self._task.reward,
+            forward_distance=forward_distance,
+            target_progress=target_progress,
+            energy=self._energy,
+            fallen=body_up_z < 0.5,
+        )
 
         return FrameState(t=self._t, parts=parts, joint_angles=joint_angles, score=score)
 
