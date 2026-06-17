@@ -62,7 +62,7 @@ def test_render_trace_produces_rgb_frames():
     try:
         backend.build(creature, task)
         frames = []
-        for step in range(int(task.duration / task.timestep)):
+        for step in range(task.step_count()):
             backend.apply_motor_targets(sinusoid_targets(creature, step * task.timestep))
             frames.append(backend.step(task.timestep))
     finally:

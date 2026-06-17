@@ -140,14 +140,13 @@ A second pass that ran the whole pipeline and read every module. Findings:
   rejected), applied as the link orientation in the PyBullet backend, so limbs can be angled
   rather than only axis-aligned. Verified by a backend test (a fixed child with a 90° rest
   orientation reports that orientation).
-- **G21 ⏳ — `demo` defaults are CWD-relative and `examples/` is not packaged.** `creature-lab
-  demo` only works from a repo checkout; a pip/uvx install has no `examples/`. Consider
-  bundling a built-in default creature or shipping `examples/` as package data.
-- **G22 ⏳ — `export` MP4 with odd width/height fails in ffmpeg (libx264).** Defaults
-  (640×480) are even, but a user can pass odd values; round dimensions up to even (or document).
-- **G23 ⏳ — Several scheduling/robustness niceties.** `int(duration / timestep)` silently
-  drops a partial final step; `TaskSpec` does not warn when `timestep` doesn't divide
-  `duration`. Low priority.
+- **G21 ✅ — `demo` no longer depends on the working directory.** Added `creature_lab/library.py`
+  with built-in `default_creature()` / `default_task()`; `creature-lab demo` uses them when no
+  paths are given, so it works from an installed package (verified from a foreign CWD).
+- **G22 ✅ — `render_trace` rounds dimensions up to even** so MP4 (libx264) stays valid.
+- **G23 ✅ — Step count is FP-robust.** `TaskSpec.step_count()` uses rounding (min 1) instead
+  of truncating `duration / timestep`, so float error can no longer silently drop the final
+  step; the CLI and tests use it.
 
-Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (59 tests)
+Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (72 tests)
 all green, and the full CLI loop (`validate → run → replay → export → evolve → demo`) works.
