@@ -1,0 +1,131 @@
+"""End-to-end scenario tests driving the CLI exactly as a user would.
+
+Each test runs a full pipeline through the Typer app and validates the on-disk
+artifacts, so it exercises the real backend, trace I/O, viewer, and exporter
+together (not mocked). Tests skip when their optional dependency is absent; CI
+installs all extras, so the whole pipeline runs there.
+"""
+
+import json
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from creature_lab.cli import app
+from creature_lab.schema import CreatureSpec, EpisodeTrace
+
+runner = CliRunner()
+EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
+TRIPOD = EXAMPLES / "tripod.json"
+
+pybullet = pytest.importorskip("pybullet")  # the whole module needs the sim backend
+
+
+def _only_run_dir(runs_dir: Path) -> Path:
+    [run_dir] = list(runs_dir.iterdir())
+    return run_dir
+
+
+def test_run_replay_export_pipeline(tmp_path):
+    pytest.importorskip("imageio")
+    runs_dir = tmp_path / "runs"
+
+    run = runner.invoke(
+        app,
+        [
+            "run",
+            str(TRIPOD),
+            "--task",
+            str(EXAMPLES / "crawl_forward.json"),
+            "--runs-dir",
+            str(runs_dir),
+        ],
+    )
+    assert run.exit_code == 0, run.stdout
+
+    run_dir = _only_run_dir(runs_dir)
+    # Run is self-describing and the trace round-trips through the schema.
+    creature = CreatureSpec.model_validate_json((run_dir / "creature.json").read_text())
+    trace = EpisodeTrace.model_validate_json((run_dir / "trace.json").read_text())
+    assert creature.name == "tripod"
+    assert len(trace.frames) == 180
+    assert any(frame.contacts for frame in trace.frames)
+
+    replay = runner.invoke(app, ["replay", str(run_dir)])
+    assert replay.exit_code == 0, replay.stdout
+    assert trace.run_id in replay.stdout
+
+    gif = tmp_path / "out.gif"
+    mp4 = tmp_path / "out.mp4"
+    for out in (gif, mp4):
+        result = runner.invoke(
+            app, ["export", str(run_dir), "--out", str(out), "--width", "120", "--height", "90"]
+        )
+        assert result.exit_code == 0, result.stdout
+        assert out.exists() and out.stat().st_size > 0
+
+
+@pytest.mark.parametrize(
+    "task_file", ["crawl_forward.json", "reach_target.json", "recover_after_damage.json"]
+)
+def test_every_example_task_runs(tmp_path, task_file):
+    runs_dir = tmp_path / "runs"
+    result = runner.invoke(
+        app, ["run", str(TRIPOD), "--task", str(EXAMPLES / task_file), "--runs-dir", str(runs_dir)]
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "score=" in result.stdout
+
+    trace = EpisodeTrace.model_validate_json((_only_run_dir(runs_dir) / "trace.json").read_text())
+    assert trace.frames
+    if task_file == "recover_after_damage.json":
+        # The mid-run damage event must be recorded in the trace.
+        assert any("damage:leg_a" in frame.events for frame in trace.frames)
+
+
+def test_demo_streams_and_saves(tmp_path):
+    pytest.importorskip("viser")
+    runs_dir = tmp_path / "runs"
+    # --no-hold returns after one streamed pass instead of serving forever.
+    result = runner.invoke(
+        app, ["demo", "--no-hold", "--port", "8147", "--runs-dir", str(runs_dir)]
+    )
+    assert result.exit_code == 0, result.stdout
+
+    run_dir = _only_run_dir(runs_dir)
+    trace = EpisodeTrace.model_validate_json((run_dir / "trace.json").read_text())
+    assert trace.creature_name == "tripod"
+    assert (run_dir / "creature.json").exists()
+
+
+def test_evolve_then_export_best(tmp_path):
+    pytest.importorskip("imageio")
+    runs_dir = tmp_path / "runs"
+    evolve = runner.invoke(
+        app,
+        [
+            "evolve",
+            str(TRIPOD),
+            "--task",
+            str(EXAMPLES / "crawl_forward.json"),
+            "--attempts",
+            "2",
+            "--seed",
+            "1",
+            "--runs-dir",
+            str(runs_dir),
+        ],
+    )
+    assert evolve.exit_code == 0, evolve.stdout
+
+    run_dir = _only_run_dir(runs_dir)
+    best = json.loads((run_dir / "creature.json").read_text())
+    assert best["name"] == "tripod"
+
+    out = tmp_path / "best.gif"
+    export = runner.invoke(
+        app, ["export", str(run_dir), "--out", str(out), "--width", "120", "--height", "90"]
+    )
+    assert export.exit_code == 0, export.stdout
+    assert out.exists() and out.stat().st_size > 0
