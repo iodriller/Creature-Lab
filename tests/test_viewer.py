@@ -56,17 +56,23 @@ def test_build_scene_and_apply_frame_headless():
                 "leg": {"position": [0.0, 0.0, 0.5]},
                 "head": {"position": [0.0, 0.0, 1.0]},
             },
+            "contacts": [{"part_id": "leg", "position": [0.0, 0.0, 0.0]}],
         }
     )
 
     server = viser.ViserServer(port=8129, verbose=False)
     try:
-        handles = build_scene(server, creature, task)
-        assert set(handles) == {"torso", "leg", "head"}
+        handles = build_scene(server, creature, task, max_contacts=4)
+        assert set(handles.parts) == {"torso", "leg", "head"}
+        assert all(not marker.visible for marker in handles.contacts)
 
         apply_frame(handles, frame)
-        assert tuple(handles["torso"].position) == (1.0, 2.0, 3.0)
-        assert tuple(handles["torso"].wxyz) == (1.0, 0.0, 0.0, 0.0)
+        assert tuple(handles.parts["torso"].position) == (1.0, 2.0, 3.0)
+        assert tuple(handles.parts["torso"].wxyz) == (1.0, 0.0, 0.0, 0.0)
+        # One contact this frame: first marker shown at the contact, the rest hidden.
+        assert handles.contacts[0].visible is True
+        assert tuple(handles.contacts[0].position) == (0.0, 0.0, 0.0)
+        assert all(not marker.visible for marker in handles.contacts[1:])
     finally:
         server.stop()
 
