@@ -12,12 +12,23 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from typing import Any
 
 from creature_lab.schema import CreatureSpec, EpisodeTrace, FrameState, PartSpec, TaskSpec
 from creature_lab.schema.creature import ShapeType
 
 _DEFAULT_COLOR = (0.6, 0.6, 0.6)
+_CONTACT_COLOR = (255, 60, 40)
+_MAX_CONTACT_MARKERS = 16
+
+
+@dataclass
+class SceneHandles:
+    """Mutable Viser handles for a built scene."""
+
+    parts: dict[str, Any]
+    contacts: list[Any] = field(default_factory=list)
 
 
 def part_color_255(part: PartSpec) -> tuple[int, int, int]:
@@ -41,25 +52,42 @@ def _add_part(scene: Any, name: str, part: PartSpec) -> Any:
 
 
 def build_scene(
-    server: Any, creature: CreatureSpec, task: TaskSpec | None = None
-) -> dict[str, Any]:
-    """Add a floor, optional target marker, and one handle per part. Returns the handles."""
+    server: Any,
+    creature: CreatureSpec,
+    task: TaskSpec | None = None,
+    *,
+    max_contacts: int = _MAX_CONTACT_MARKERS,
+) -> SceneHandles:
+    """Add a floor, optional target, one handle per part, and a contact-marker pool."""
     server.scene.add_grid("/floor", width=10.0, height=10.0, plane="xy")
     if task is not None and task.target is not None:
         target = server.scene.add_icosphere(
             "/target", radius=task.target.radius, color=(255, 180, 40)
         )
         target.position = task.target.position
-    return {part.id: _add_part(server.scene, f"/parts/{part.id}", part) for part in creature.parts}
+    parts = {part.id: _add_part(server.scene, f"/parts/{part.id}", part) for part in creature.parts}
+    # A fixed pool of contact dots, shown/hidden per frame as contacts come and go.
+    contacts = []
+    for index in range(max_contacts):
+        marker = server.scene.add_icosphere(f"/contacts/{index}", radius=0.03, color=_CONTACT_COLOR)
+        marker.visible = False
+        contacts.append(marker)
+    return SceneHandles(parts=parts, contacts=contacts)
 
 
-def apply_frame(handles: dict[str, Any], frame: FrameState) -> None:
-    """Move each part handle to its pose in `frame`."""
+def apply_frame(handles: SceneHandles, frame: FrameState) -> None:
+    """Move part handles to their poses and show contact markers for this frame."""
     for part_id, pose in frame.parts.items():
-        handle = handles.get(part_id)
+        handle = handles.parts.get(part_id)
         if handle is not None:
             handle.position = pose.position
             handle.wxyz = pose.orientation
+    for index, marker in enumerate(handles.contacts):
+        if index < len(frame.contacts):
+            marker.position = frame.contacts[index].position
+            marker.visible = True
+        else:
+            marker.visible = False
 
 
 def stream_frames(
