@@ -100,9 +100,11 @@ Listed here against `docs/MVP_PLAN.md`; later commits closed most of them.
 - **G14** ✅ — Removed the unused `numpy` dependency; `rich` is now used by the CLI.
 - **G15** ⏳ — Acyclicity check is recursive (`creature.py`); fine for the MVP, but an iterative
   DFS would avoid Python's recursion limit on very deep creatures.
-- **G16** ⏳ — Scoring only implements `reward.forward_distance`; `target_distance`,
-  `energy_penalty`, and `fall_penalty` are accepted by the schema but not yet computed by the
-  PyBullet backend.
+- **G16** ✅ — Scoring now implements all reward terms. A pure `creature_lab/scoring.py`
+  combines `forward_distance`, `target_distance` (progress toward the target), `energy_penalty`
+  (integrated squared joint speed), and `fall_penalty` (toppled when the body's up-axis tips
+  past 60°); the PyBullet backend feeds it real measurements. New `reach_target.json` and
+  `recover_after_damage.json` example tasks exercise these.
 
 ---
 
@@ -133,12 +135,11 @@ A second pass that ran the whole pipeline and read every module. Findings:
   only schema/CLI/evolve/runs ran. CI now uses `uv sync --all-extras` so the full suite runs.
 - **G19 ✅ — Missing backend tests.** Added a `reset()` test and a `SimBackend` protocol
   conformance test (the protocol is now `@runtime_checkable`).
-- **G20 ⏳ — No way to orient a child part relative to its parent.** `JointSpec` has `anchor`
-  and `axis` but no child rest-orientation, so limbs can only be axis-aligned (capsules always
-  point along the parent's local Z). Proper splayed/angled legs need a `rest_orientation`
-  field on `JointSpec` (scalar-first quaternion), applied as the link orientation in the
-  backend. This is the main thing standing between the current "stool" and a real walker — the
-  recommended next enhancement.
+- **G20 ✅ — Child parts can now be oriented relative to their parent.** Added a
+  `rest_orientation` quaternion to `JointSpec` (scalar-first, identity by default, zero
+  rejected), applied as the link orientation in the PyBullet backend, so limbs can be angled
+  rather than only axis-aligned. Verified by a backend test (a fixed child with a 90° rest
+  orientation reports that orientation).
 - **G21 ⏳ — `demo` defaults are CWD-relative and `examples/` is not packaged.** `creature-lab
   demo` only works from a repo checkout; a pip/uvx install has no `examples/`. Consider
   bundling a built-in default creature or shipping `examples/` as package data.
