@@ -92,3 +92,21 @@ def test_evolve_saves_best_creature(tmp_path):
     [run_dir] = list(runs_dir.iterdir())
     assert (run_dir / "creature.json").exists()
     assert (run_dir / "trace.json").exists()
+
+
+def test_export_creates_gif(tmp_path):
+    pytest.importorskip("pybullet")
+    pytest.importorskip("imageio")
+    runs_dir = tmp_path / "runs"
+    run_result = runner.invoke(
+        app, ["run", str(EXAMPLE), "--task", str(TASK), "--runs-dir", str(runs_dir)]
+    )
+    assert run_result.exit_code == 0, run_result.stdout
+
+    [run_dir] = list(runs_dir.iterdir())
+    out = tmp_path / "clip.gif"
+    result = runner.invoke(
+        app, ["export", str(run_dir), "--out", str(out), "--width", "64", "--height", "48"]
+    )
+    assert result.exit_code == 0, result.stdout
+    assert out.exists() and out.stat().st_size > 0
