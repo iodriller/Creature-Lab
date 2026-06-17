@@ -51,9 +51,8 @@ def backend():
 
 def _run_episode(backend, creature, task) -> list:
     backend.build(creature, task)
-    steps = int(task.duration / task.timestep)
     frames = []
-    for step_index in range(steps):
+    for step_index in range(task.step_count()):
         t = step_index * task.timestep
         backend.apply_motor_targets(sinusoid_targets(creature, t))
         frames.append(backend.step(task.timestep))
@@ -66,7 +65,7 @@ def test_short_episode_emits_finite_frames(backend):
 
     frames = _run_episode(backend, creature, task)
 
-    assert len(frames) == int(task.duration / task.timestep)
+    assert len(frames) == task.step_count()
     assert all(math.isfinite(frame.score) for frame in frames)
     assert set(frames[0].parts) == {part.id for part in creature.parts}
     assert "hip_a" in frames[0].joint_angles

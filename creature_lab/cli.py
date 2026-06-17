@@ -16,6 +16,7 @@ from rich.table import Table
 from creature_lab import VERSION
 from creature_lab.controllers.sinusoid import sinusoid_targets
 from creature_lab.evolve import hill_climb
+from creature_lab.library import default_creature, default_task
 from creature_lab.runs import (
     DEFAULT_RUNS_DIR,
     new_run_id,
@@ -89,9 +90,8 @@ def _simulate(creature: CreatureSpec, task: TaskSpec, *, gui: bool = False) -> E
     backend = _require_backend()(gui=gui)
     try:
         backend.build(creature, task)
-        steps = int(task.duration / task.timestep)
         frames: list[FrameState] = []
-        for step_index in range(steps):
+        for step_index in range(task.step_count()):
             t = step_index * task.timestep
             backend.apply_motor_targets(sinusoid_targets(creature, t))
             frames.append(backend.step(task.timestep))
@@ -148,12 +148,12 @@ def run(
 
 @app.command()
 def demo(
-    creature_path: Annotated[Path, typer.Argument(help="CreatureSpec JSON file.")] = Path(
-        "examples/tripod.json"
-    ),
-    task: Annotated[Path, typer.Option(help="TaskSpec JSON file.")] = Path(
-        "examples/crawl_forward.json"
-    ),
+    creature_path: Annotated[
+        Path | None, typer.Argument(help="CreatureSpec JSON (default: built-in tripod).")
+    ] = None,
+    task: Annotated[
+        Path | None, typer.Option(help="TaskSpec JSON (default: built-in crawl_forward).")
+    ] = None,
     fps: Annotated[float, typer.Option(help="Playback frames per second.")] = 60.0,
     port: Annotated[int, typer.Option(help="Port for the Viser server.")] = 8080,
     save: Annotated[bool, typer.Option(help="Save the streamed episode as a trace.")] = True,
@@ -161,9 +161,13 @@ def demo(
         Path, typer.Option(help="Directory to save the episode trace under.")
     ] = DEFAULT_RUNS_DIR,
 ) -> None:
-    """Simulate a creature and stream its motion live to a Viser browser viewer."""
-    creature = _load_spec(creature_path, CreatureSpec)
-    task_spec = _load_spec(task, TaskSpec)
+    """Simulate a creature and stream its motion live to a Viser browser viewer.
+
+    With no arguments it uses the built-in tripod and crawl-forward task, so it
+    works from an installed package without the repository's examples/ directory.
+    """
+    creature = _load_spec(creature_path, CreatureSpec) if creature_path else default_creature()
+    task_spec = _load_spec(task, TaskSpec) if task else default_task()
 
     backend_cls = _require_backend()
     try:
@@ -178,8 +182,7 @@ def demo(
         backend = backend_cls()
         try:
             backend.build(creature, task_spec)
-            steps = int(task_spec.duration / task_spec.timestep)
-            for step_index in range(steps):
+            for step_index in range(task_spec.step_count()):
                 targets = sinusoid_targets(creature, step_index * task_spec.timestep)
                 backend.apply_motor_targets(targets)
                 yield backend.step(task_spec.timestep)
