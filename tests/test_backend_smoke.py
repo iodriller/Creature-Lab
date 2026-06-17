@@ -99,3 +99,27 @@ def test_damage_event_fires_once(backend):
     damage_frames = [frame for frame in frames if frame.events]
     assert len(damage_frames) == 1
     assert damage_frames[0].events == ["damage:leg_a"]
+
+
+def test_reset_reruns_from_the_start(backend):
+    creature = CreatureSpec.model_validate(TRIPOD)
+    task = TaskSpec.model_validate({"name": "t", "duration": 0.2, "timestep": 1 / 60})
+
+    first = _run_episode(backend, creature, task)
+    backend.reset()
+    second_first_frame = backend.step(task.timestep)
+
+    # After reset the clock restarts near zero rather than continuing from the
+    # end of the previous episode.
+    assert second_first_frame.t < first[-1].t
+
+
+def test_backend_satisfies_protocol():
+    from creature_lab.backends.base import SimBackend
+    from creature_lab.backends.pybullet_backend import PyBulletBackend
+
+    instance = PyBulletBackend()
+    try:
+        assert isinstance(instance, SimBackend)
+    finally:
+        instance.close()
