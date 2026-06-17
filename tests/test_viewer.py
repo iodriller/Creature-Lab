@@ -8,7 +8,12 @@ is not installed.
 import pytest
 
 from creature_lab.schema import CreatureSpec, FrameState, PartSpec, TaskSpec
-from creature_lab.viewers.viser_viewer import apply_frame, build_scene, part_color_255
+from creature_lab.viewers.viser_viewer import (
+    apply_frame,
+    build_scene,
+    part_color_255,
+    stream_frames,
+)
 
 CREATURE = {
     "name": "tripod",
@@ -64,3 +69,26 @@ def test_build_scene_and_apply_frame_headless():
         assert tuple(handles["torso"].wxyz) == (1.0, 0.0, 0.0, 0.0)
     finally:
         server.stop()
+
+
+def test_stream_frames_captures_and_returns_frames():
+    pytest.importorskip("viser")
+
+    creature = CreatureSpec.model_validate(CREATURE)
+
+    def make_frame(x: float) -> FrameState:
+        return FrameState.model_validate(
+            {
+                "t": x,
+                "parts": {
+                    "torso": {"position": [x, 0.0, 0.0]},
+                    "leg": {"position": [0.0, 0.0, 0.0]},
+                    "head": {"position": [0.0, 0.0, 0.0]},
+                },
+            }
+        )
+
+    incoming = [make_frame(0.0), make_frame(1.0), make_frame(2.0)]
+    # hold=False so the call returns after one pass; high fps keeps the test fast.
+    captured = stream_frames(creature, iter(incoming), fps=1000.0, port=8130, hold=False)
+    assert captured == incoming
