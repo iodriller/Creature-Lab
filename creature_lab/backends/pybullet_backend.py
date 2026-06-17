@@ -322,6 +322,10 @@ def render_trace(
     """
     import numpy as np
 
+    # Round up to even dimensions so the frames are valid MP4 input for libx264.
+    width += width % 2
+    height += height % 2
+
     backend = PyBulletBackend()
     frames: list = []
     try:
