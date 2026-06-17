@@ -22,6 +22,11 @@ sim = [
 viz = [
     "viser>=1.0",
 ]
+export = [
+    "imageio>=2.31",
+    "imageio-ffmpeg>=0.4",  # enables MP4 output
+    "pillow>=10.0",  # enables GIF output
+]
 
 [project.scripts]
 creature-lab = "creature_lab.cli:app"

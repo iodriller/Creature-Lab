@@ -92,8 +92,9 @@ Listed here against `docs/MVP_PLAN.md`; later commits closed most of them.
 - **G10** ✅ — Sinusoid controller added (`controllers/sinusoid.py`, Phase 2).
 - **G11** ✅ — Trace writer/reader added (`runs.py`) with a `run` + `replay` CLI (Phase 2/5).
 - **G12** ✅/⏳ — Viser browser viewer added (`viewers/viser_viewer.py`, `view` command,
-  Phase 4): it replays recorded poses from a run directory. A *live* viewer during simulation
-  and GIF/MP4 export (Phase 5) are still pending.
+  Phase 4) and GIF/MP4 export (`viewers/video_exporter.py` + `render_trace`, `export` command,
+  Phase 5); both replay recorded poses from a run directory without re-running physics. A
+  *live* viewer that streams during simulation is still pending.
 - **G13** ✅/⏳ — Baseline mutator + hill-climb (`evolve.py`, `evolve` command) added (Phase 6).
   The LLM tool loop and a dedicated `AgentTrace` schema (Phase 7) are still pending.
 - **G14** ✅ — Removed the unused `numpy` dependency; `rich` is now used by the CLI.
