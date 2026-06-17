@@ -100,9 +100,11 @@ Listed here against `docs/MVP_PLAN.md`; later commits closed most of them.
 - **G14** ✅ — Removed the unused `numpy` dependency; `rich` is now used by the CLI.
 - **G15** ⏳ — Acyclicity check is recursive (`creature.py`); fine for the MVP, but an iterative
   DFS would avoid Python's recursion limit on very deep creatures.
-- **G16** ⏳ — Scoring only implements `reward.forward_distance`; `target_distance`,
-  `energy_penalty`, and `fall_penalty` are accepted by the schema but not yet computed by the
-  PyBullet backend.
+- **G16** ✅ — Scoring now implements all reward terms. A pure `creature_lab/scoring.py`
+  combines `forward_distance`, `target_distance` (progress toward the target), `energy_penalty`
+  (integrated squared joint speed), and `fall_penalty` (toppled when the body's up-axis tips
+  past 60°); the PyBullet backend feeds it real measurements. New `reach_target.json` and
+  `recover_after_damage.json` example tasks exercise these.
 
 ---
 
@@ -118,3 +120,34 @@ No viewer exists yet, so today's highest-leverage UX is onboarding/DX:
 - **U3 (future)** — For the Viser viewer, keep the plan's floor grid / target marker / score
   panel / contact markers / motion trail, and add a visible "physics is backend-dependent"
   disclaimer plus a deterministic-seed display to honor the portability promise.
+
+---
+
+## 🔎 End-to-end audit (2026-06-17)
+
+A second pass that ran the whole pipeline and read every module. Findings:
+
+- **G17 ✅ — Example creature was physically degenerate.** Every joint anchor defaulted to
+  `(0, 0, 0)`, so all three tripod legs spawned at the exact torso center `(0, 0, 1)` — a pile
+  of overlapping parts. Fixed by giving the legs distinct anchors that hang below the torso.
+- **G18 ✅ — CI only installed `--extra dev`.** All backend, viewer, and export tests are
+  guarded by `importorskip`, so the most complex code (~13 tests) silently skipped in CI;
+  only schema/CLI/evolve/runs ran. CI now uses `uv sync --all-extras` so the full suite runs.
+- **G19 ✅ — Missing backend tests.** Added a `reset()` test and a `SimBackend` protocol
+  conformance test (the protocol is now `@runtime_checkable`).
+- **G20 ✅ — Child parts can now be oriented relative to their parent.** Added a
+  `rest_orientation` quaternion to `JointSpec` (scalar-first, identity by default, zero
+  rejected), applied as the link orientation in the PyBullet backend, so limbs can be angled
+  rather than only axis-aligned. Verified by a backend test (a fixed child with a 90° rest
+  orientation reports that orientation).
+- **G21 ⏳ — `demo` defaults are CWD-relative and `examples/` is not packaged.** `creature-lab
+  demo` only works from a repo checkout; a pip/uvx install has no `examples/`. Consider
+  bundling a built-in default creature or shipping `examples/` as package data.
+- **G22 ⏳ — `export` MP4 with odd width/height fails in ffmpeg (libx264).** Defaults
+  (640×480) are even, but a user can pass odd values; round dimensions up to even (or document).
+- **G23 ⏳ — Several scheduling/robustness niceties.** `int(duration / timestep)` silently
+  drops a partial final step; `TaskSpec` does not warn when `timestep` doesn't divide
+  `duration`. Low priority.
+
+Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (59 tests)
+all green, and the full CLI loop (`validate → run → replay → export → evolve → demo`) works.

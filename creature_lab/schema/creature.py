@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 
-from creature_lab.schema.base import ColorRGB, JointLimit, StrictModel, Vector3
+from creature_lab.schema.base import ColorRGB, JointLimit, Quaternion, StrictModel, Vector3
 
 
 class ShapeType(StrEnum):
@@ -84,6 +84,10 @@ class JointSpec(StrictModel):
     type: JointType
     anchor: Vector3 = (0.0, 0.0, 0.0)
     axis: Vector3 = (0.0, 1.0, 0.0)
+    #: Resting orientation of the child part relative to the parent, scalar-first
+    #: ``(w, x, y, z)``. Identity leaves the child axis-aligned with the parent; use
+    #: this to angle limbs (e.g. splay legs outward).
+    rest_orientation: Quaternion = (1.0, 0.0, 0.0, 0.0)
     limit: JointLimit | None = None
 
     @field_validator("id", "parent", "child")
@@ -92,6 +96,13 @@ class JointSpec(StrictModel):
         value = value.strip()
         if not value:
             raise ValueError("joint identifiers must not be blank")
+        return value
+
+    @field_validator("rest_orientation")
+    @classmethod
+    def validate_rest_orientation(cls, value: Quaternion) -> Quaternion:
+        if all(component == 0 for component in value):
+            raise ValueError("rest_orientation must not be the zero quaternion")
         return value
 
     @field_validator("limit")

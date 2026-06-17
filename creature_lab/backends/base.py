@@ -7,11 +7,12 @@ on a specific engine.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from creature_lab.schema import CreatureSpec, FrameState, TaskSpec
 
 
+@runtime_checkable
 class SimBackend(Protocol):
     def build(self, creature: CreatureSpec, task: TaskSpec) -> None: ...
     def reset(self) -> None: ...

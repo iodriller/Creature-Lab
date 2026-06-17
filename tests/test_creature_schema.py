@@ -124,3 +124,15 @@ def test_color_must_be_bounded():
         PartSpec.model_validate(
             {"id": "a", "shape": "sphere", "radius": 0.5, "mass": 1.0, "color": [2, 0, 0]}
         )
+
+
+def test_rest_orientation_defaults_to_identity():
+    spec = CreatureSpec.model_validate(_two_part_creature())
+    assert spec.joints[0].rest_orientation == (1.0, 0.0, 0.0, 0.0)
+
+
+def test_zero_rest_orientation_is_rejected():
+    creature = _two_part_creature()
+    creature["joints"][0]["rest_orientation"] = [0.0, 0.0, 0.0, 0.0]
+    with pytest.raises(ValidationError, match="zero quaternion"):
+        CreatureSpec.model_validate(creature)
