@@ -60,16 +60,19 @@ hill-climbs from a seed creature and saves the best one, and `replay` summarizes
 trace without re-running physics.
 
 ```bash
-# Browser replay viewer needs the optional Viser dependency.
-uv sync --extra viz
-uv run creature-lab view runs/<run-id>   # animates the recorded poses in a browser
+# Live browser viewer needs the optional Viser dependency (plus the sim backend).
+uv sync --extra sim --extra viz
+uv run creature-lab demo                 # simulate the tripod and stream it live in a browser
+uv run creature-lab view runs/<run-id>   # replay a saved run's recorded poses
 
 # GIF/MP4 export needs the optional imageio dependencies (plus the sim renderer).
 uv sync --extra sim --extra export
 uv run creature-lab export runs/<run-id> --out tripod.gif   # or --out clip.mp4
 ```
 
-`view` and `export` render recorded poses only — they never re-run physics, matching the
+`demo` is the headline "clone → one command → a weird little creature moves" experience: it
+streams the simulation to the browser live, then saves the run. `view` and `export` render
+recorded poses only — they never re-run physics, matching the
 project's "replays are portable, exact physics is backend-dependent" promise. Install
 everything with `uv sync --all-extras`.
 

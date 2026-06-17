@@ -31,6 +31,12 @@ def test_validate_missing_file():
     assert result.exit_code == 2
 
 
+def test_demo_missing_creature_exits():
+    # The happy path serves a blocking viewer; exercise the spec-loading guard instead.
+    result = runner.invoke(app, ["demo", "does/not/exist.json", "--task", "also/missing.json"])
+    assert result.exit_code == 2
+
+
 def test_validate_invalid_creature(tmp_path):
     bad = tmp_path / "bad.json"
     bad.write_text(json.dumps({"name": "x"}))  # missing parts

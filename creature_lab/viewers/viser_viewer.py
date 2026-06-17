@@ -1,9 +1,9 @@
-"""Viser browser viewer for replaying episode traces.
+"""Viser browser viewer for replaying or live-streaming creature motion.
 
-This renders recorded poses; it never runs physics. Per docs/MVP_PLAN.md, replay
-is portable (any renderer can draw recorded poses) while physics is not. The
-schema's scalar-first ``(w, x, y, z)`` quaternion matches Viser's ``wxyz``, so no
-conversion is needed here.
+This renders poses; it never runs physics. It consumes a stream of FrameState
+objects (recorded or produced live by a backend), keeping the viewer
+backend-agnostic per docs/MVP_PLAN.md. The schema's scalar-first ``(w, x, y, z)``
+quaternion matches Viser's ``wxyz``, so no conversion is needed here.
 
 Viser is an optional dependency (the ``viz`` extra); import this module lazily.
 """
@@ -11,6 +11,7 @@ Viser is an optional dependency (the ``viz`` extra); import this module lazily.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from typing import Any
 
 from creature_lab.schema import CreatureSpec, EpisodeTrace, FrameState, PartSpec, TaskSpec
@@ -61,6 +62,44 @@ def apply_frame(handles: dict[str, Any], frame: FrameState) -> None:
             handle.wxyz = pose.orientation
 
 
+def stream_frames(
+    creature: CreatureSpec,
+    frames: Iterable[FrameState],
+    *,
+    task: TaskSpec | None = None,
+    fps: float = 30.0,
+    port: int = 8080,
+    hold: bool = True,
+) -> list[FrameState]:
+    """Open a Viser server and animate `frames` as they arrive.
+
+    `frames` may be a live generator (e.g. a running simulation) or a recorded
+    sequence. Frames are captured as they play; when the stream ends and `hold`
+    is true, the captured frames loop so the scene keeps moving until interrupted.
+    Returns the captured frames so a caller can save them as a trace.
+    """
+    import viser
+
+    server = viser.ViserServer(port=port)
+    handles = build_scene(server, creature, task)
+    delay = 1.0 / fps
+    captured: list[FrameState] = []
+    try:
+        for frame in frames:
+            apply_frame(handles, frame)
+            captured.append(frame)
+            time.sleep(delay)
+        while hold and captured:
+            for frame in captured:
+                apply_frame(handles, frame)
+                time.sleep(delay)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.stop()
+    return captured
+
+
 def play_trace(
     creature: CreatureSpec,
     trace: EpisodeTrace,
@@ -70,20 +109,5 @@ def play_trace(
     loop: bool = True,
     port: int = 8080,
 ) -> None:
-    """Open a Viser server and animate the trace. Blocks until interrupted."""
-    import viser
-
-    server = viser.ViserServer(port=port)
-    handles = build_scene(server, creature, task)
-    delay = 1.0 / fps
-    try:
-        while True:
-            for frame in trace.frames:
-                apply_frame(handles, frame)
-                time.sleep(delay)
-            if not loop:
-                break
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.stop()
+    """Open a Viser server and animate a recorded trace. Blocks until interrupted."""
+    stream_frames(creature, trace.frames, task=task, fps=fps, port=port, hold=loop)
