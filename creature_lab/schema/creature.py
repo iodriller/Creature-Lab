@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from enum import StrEnum
 from typing import Any
 
@@ -190,20 +191,25 @@ class CreatureSpec(StrictModel):
     def _validate_reachable_acyclic(
         root: str, adjacency: dict[str, list[str]], all_parts: set[str]
     ) -> None:
+        # Iterative DFS (explicit stack) so very deep creatures cannot hit Python's
+        # recursion limit. A back-edge to a node still on the current path is a cycle.
         visited: set[str] = set()
-        visiting: set[str] = set()
-
-        def visit(part_id: str) -> None:
-            if part_id in visiting:
+        on_path: set[str] = {root}
+        stack: list[tuple[str, Iterator[str]]] = [(root, iter(adjacency[root]))]
+        while stack:
+            node, children = stack[-1]
+            child = next(children, None)
+            if child is None:
+                stack.pop()
+                on_path.discard(node)
+                visited.add(node)
+                continue
+            if child in on_path:
                 raise ValueError("creature joint graph must be acyclic")
-            if part_id in visited:
-                return
-            visiting.add(part_id)
-            for child_id in adjacency[part_id]:
-                visit(child_id)
-            visiting.remove(part_id)
-            visited.add(part_id)
+            if child in visited:
+                continue
+            on_path.add(child)
+            stack.append((child, iter(adjacency[child])))
 
-        visit(root)
         if visited != all_parts:
             raise ValueError("all parts must be reachable from the root part")

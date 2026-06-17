@@ -37,3 +37,14 @@ def test_target_reward_with_target_is_valid():
         "reward": {"target_distance": 1.0},
     }
     TaskSpec.model_validate(spec)
+
+
+def test_step_count_is_fp_robust():
+    # 3.0 / (1/60) can land at 179.999... under float division; rounding keeps 180.
+    task = TaskSpec.model_validate({"name": "t", "duration": 3.0, "timestep": 1 / 60})
+    assert task.step_count() == 180
+
+
+def test_step_count_is_at_least_one():
+    task = TaskSpec.model_validate({"name": "t", "duration": 0.01, "timestep": 0.01})
+    assert task.step_count() == 1

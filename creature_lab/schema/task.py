@@ -74,3 +74,12 @@ class TaskSpec(StrictModel):
         if self.target is None and self.reward.target_distance != 0.0:
             raise ValueError("reward.target_distance requires a task target")
         return self
+
+    def step_count(self) -> int:
+        """Number of simulation steps for this task.
+
+        Uses rounding (not truncation) so floating-point error in
+        ``duration / timestep`` cannot silently drop the final step; always at
+        least one step since ``timestep <= duration``.
+        """
+        return max(1, round(self.duration / self.timestep))
