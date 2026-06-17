@@ -72,6 +72,23 @@ def test_short_episode_emits_finite_frames(backend):
     assert "hip_b" not in frames[0].joint_angles  # fixed joints have no angle
 
 
+def test_ground_contacts_are_reported(backend):
+    from creature_lab.library import default_creature
+
+    creature = default_creature()  # tripod with legs hanging below the torso
+    task = TaskSpec.model_validate({"name": "t", "duration": 2.0, "timestep": 1 / 60})
+
+    frames = _run_episode(backend, creature, task)
+
+    part_ids = {part.id for part in creature.parts}
+    # Once it settles, at least one frame reports foot/ground contacts.
+    contact_frames = [frame for frame in frames if frame.contacts]
+    assert contact_frames, "expected the creature to touch the ground"
+    for contact in contact_frames[-1].contacts:
+        assert contact.part_id in part_ids
+        assert contact.force >= 0.0
+
+
 def test_frames_are_time_ordered(backend):
     creature = CreatureSpec.model_validate(TRIPOD)
     task = TaskSpec.model_validate({"name": "t", "duration": 0.2, "timestep": 1 / 60})

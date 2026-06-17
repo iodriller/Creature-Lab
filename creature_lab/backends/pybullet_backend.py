@@ -15,7 +15,7 @@ import pybullet_data
 
 from creature_lab.schema import CreatureSpec, PartPose, PartSpec, ShapeType, TaskSpec
 from creature_lab.schema.creature import JointType
-from creature_lab.schema.trace import EpisodeTrace, FrameState
+from creature_lab.schema.trace import ContactSpec, EpisodeTrace, FrameState
 from creature_lab.scoring import episode_score
 
 _DEFAULT_COLOR = (0.6, 0.6, 0.6)
@@ -58,7 +58,9 @@ class PyBulletBackend:
         self._body_id: int | None = None
         self._link_index: dict[str, int] = {}
         self._joint_link: dict[str, int] = {}
+        self._part_by_link: dict[int, str] = {}
         self._root_id = ""
+        self._plane_id = -1
         self._damaged_parts: set[str] = set()
         self._t = 0.0
         self._initial_root_x = 0.0
@@ -75,6 +77,7 @@ class PyBulletBackend:
         pybullet.changeDynamics(
             plane_id, -1, lateralFriction=task.terrain.friction, physicsClientId=self._client
         )
+        self._plane_id = plane_id
         self._build_body(creature)
         self._t = 0.0
         self._energy = 0.0
@@ -199,6 +202,7 @@ class PyBulletBackend:
                 order.append((parts_by_id[joint.child], joint, parent_link))
                 self._link_index[joint.child] = len(order) - 1
                 queue.append(joint.child)
+        self._part_by_link = {index: part_id for part_id, index in self._link_index.items()}
 
         base_collision_geom, base_collision_kwargs = _collision_geometry(root_part)
         base_collision = pybullet.createCollisionShape(
@@ -323,7 +327,33 @@ class PyBulletBackend:
             fallen=body_up_z < 0.5,
         )
 
-        return FrameState(t=self._t, parts=parts, joint_angles=joint_angles, score=score)
+        return FrameState(
+            t=self._t,
+            parts=parts,
+            joint_angles=joint_angles,
+            contacts=self._read_contacts(),
+            score=score,
+        )
+
+    def _read_contacts(self) -> list[ContactSpec]:
+        """Report the creature's contacts with the ground from the last step."""
+        points = pybullet.getContactPoints(
+            bodyA=self._body_id, bodyB=self._plane_id, physicsClientId=self._client
+        )
+        contacts: list[ContactSpec] = []
+        for point in points:
+            part_id = self._part_by_link.get(point[3])  # point[3] = link index on bodyA
+            if part_id is None:
+                continue
+            contacts.append(
+                ContactSpec(
+                    part_id=part_id,
+                    position=tuple(point[6]),  # contact position on the ground
+                    normal=tuple(point[7]),  # contact normal on the ground
+                    force=max(0.0, point[9]),  # normal force (schema requires >= 0)
+                )
+            )
+        return contacts
 
     @staticmethod
     def _pose(
