@@ -27,6 +27,9 @@ export = [
     "imageio-ffmpeg>=0.4",  # enables MP4 output
     "pillow>=10.0",  # enables GIF output
 ]
+llm = [
+    "litellm>=1.0",  # provider abstraction for `creature-lab ask` (online mode)
+]
 
 [project.scripts]
 creature-lab = "creature_lab.cli:app"
