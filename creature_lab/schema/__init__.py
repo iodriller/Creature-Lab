@@ -4,6 +4,7 @@ This package is the source of truth for creatures, tasks, and traces. It must no
 import any physics engine.
 """
 
+from creature_lab.schema.agent import AgentStep, AgentTrace
 from creature_lab.schema.base import (
     ColorRGB,
     JointLimit,
@@ -37,6 +38,8 @@ from creature_lab.schema.trace import (
 )
 
 __all__ = [
+    "AgentStep",
+    "AgentTrace",
     "ColorRGB",
     "ContactSpec",
     "CreatureSpec",

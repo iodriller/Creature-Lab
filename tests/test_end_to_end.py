@@ -99,6 +99,37 @@ def test_demo_streams_and_saves(tmp_path):
     assert (run_dir / "creature.json").exists()
 
 
+def test_ask_offline_designs_and_saves_agent_trace(tmp_path):
+    from creature_lab.schema import AgentTrace
+
+    runs_dir = tmp_path / "runs"
+    result = runner.invoke(
+        app,
+        [
+            "ask",
+            "make it crawl farther",
+            str(TRIPOD),
+            "--task",
+            str(EXAMPLES / "crawl_forward.json"),
+            "--offline",
+            "--attempts",
+            "3",
+            "--seed",
+            "0",
+            "--runs-dir",
+            str(runs_dir),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+
+    run_dir = _only_run_dir(runs_dir)
+    assert (run_dir / "creature.json").exists()
+    assert (run_dir / "trace.json").exists()
+    agent = AgentTrace.model_validate_json((run_dir / "agent.json").read_text())
+    assert agent.goal == "make it crawl farther"
+    assert len(agent.steps) == 4  # seed + 3 attempts
+
+
 def test_evolve_then_export_best(tmp_path):
     pytest.importorskip("imageio")
     runs_dir = tmp_path / "runs"

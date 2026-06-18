@@ -244,6 +244,86 @@ def evolve(
 
 
 @app.command()
+def ask(
+    goal: Annotated[str, typer.Argument(help="Plain-language design goal.")],
+    creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
+    task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
+    attempts: Annotated[int, typer.Option(help="Number of design attempts.")] = 5,
+    offline: Annotated[
+        bool, typer.Option(help="Use the built-in no-LLM tool policy instead of a model.")
+    ] = False,
+    model: Annotated[str, typer.Option(help="LiteLLM model id (online mode).")] = "gpt-4o-mini",
+    seed: Annotated[int, typer.Option(help="Seed for the offline policy.")] = 0,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory to save the best creature and traces under.")
+    ] = DEFAULT_RUNS_DIR,
+) -> None:
+    """Iteratively improve a creature toward a goal using validated design tools.
+
+    Online mode asks an LLM (via LiteLLM, the `llm` extra) for each tool call;
+    `--offline` uses a deterministic no-provider policy so it runs anywhere.
+    """
+    from creature_lab.agents.loop import Policy, design_loop
+
+    creature = _load_spec(creature_path, CreatureSpec)
+    task_spec = _load_spec(task, TaskSpec)
+
+    policy: Policy
+    if offline:
+        from creature_lab.agents.baseline import RandomToolPolicy
+
+        policy = RandomToolPolicy(seed)
+    else:
+        try:
+            import litellm  # noqa: F401
+
+            from creature_lab.agents.llm import LLMPolicy
+        except ImportError as exc:
+            console.print(
+                "[red]error:[/red] litellm is not installed. Use --offline or "
+                "`uv sync --extra llm`."
+            )
+            raise typer.Exit(code=2) from exc
+        policy = LLMPolicy(model=model)
+
+    result = design_loop(
+        creature,
+        lambda candidate: _simulate(candidate, task_spec).score,
+        policy,
+        attempts=attempts,
+        goal=goal,
+        task_name=task_spec.name,
+    )
+
+    best_trace = _simulate(result.best, task_spec)
+    run_dir = save_run(result.best, best_trace, runs_dir=runs_dir)
+    (run_dir / "agent.json").write_text(result.trace.model_dump_json(indent=2))
+
+    table = Table(title=f"ask {goal!r} ({attempts} attempts)")
+    table.add_column("attempt", justify="right")
+    table.add_column("action")
+    table.add_column("score", justify="right")
+    table.add_column("result")
+    for step in result.trace.steps:
+        if step.attempt == 0:
+            label, style = "seed", "green"
+        elif not step.valid:
+            label, style = "invalid", "red"
+        elif step.accepted:
+            label, style = "kept", "green"
+        else:
+            label, style = "rejected", "dim"
+        score = f"{step.score:.4f}" if step.score is not None else "-"
+        table.add_row(str(step.attempt), step.action, score, f"[{style}]{label}[/{style}]")
+    console.print(table)
+
+    console.print(
+        f"[green]best[/green] score={result.best_score:.4f} "
+        f"(seed score={result.trace.steps[0].score:.4f}) -> {run_dir}"
+    )
+
+
+@app.command()
 def replay(
     path: Annotated[Path, typer.Argument(help="Path to a trace.json file or run directory.")],
 ) -> None:

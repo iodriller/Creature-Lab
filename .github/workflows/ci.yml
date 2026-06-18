@@ -15,7 +15,10 @@ jobs:
       - name: Set up Python
         run: uv python install 3.11
       - name: Sync dependencies
-        run: uv sync --all-extras
+        # All test-exercised extras. The `llm` extra (litellm) is intentionally
+        # excluded: the online `ask` path needs an API key and is not run in CI,
+        # while the offline agent path and the LLM response parser need no provider.
+        run: uv sync --extra dev --extra sim --extra viz --extra export
       - name: Ruff check
         run: uv run ruff check .
       - name: Ruff format check

@@ -71,6 +71,13 @@ uv run creature-lab view runs/<run-id>   # replay a saved run's recorded poses
 # GIF/MP4 export needs the optional imageio dependencies (plus the sim renderer).
 uv sync --extra sim --extra export
 uv run creature-lab export runs/<run-id> --out tripod.gif   # or --out clip.mp4
+
+# `ask` improves a creature toward a goal using validated design tools.
+uv run creature-lab ask "make it crawl farther" examples/tripod.json \
+    --task examples/crawl_forward.json --offline      # no provider needed
+uv sync --extra llm                                   # for the LLM-driven mode
+uv run creature-lab ask "make it crawl farther" examples/tripod.json \
+    --task examples/crawl_forward.json                # asks an LLM via LiteLLM
 ```
 
 `demo` is the headline "clone → one command → a weird little creature moves" experience: it
@@ -79,6 +86,11 @@ recorded poses only — they never re-run physics, matching the
 project's "replays are portable, exact physics is backend-dependent" promise. Install
 everything with `uv sync --all-extras`. For headless use (CI, screenshots), `demo --no-hold`
 streams one pass, saves the run, and exits instead of serving until interrupted.
+
+`ask` edits the creature only through validated tools (each returns a re-validated
+`CreatureSpec`), keeps the best-scoring result, and saves an `AgentTrace` (`agent.json`).
+`--offline` uses a deterministic no-provider policy; the default online mode asks an LLM via
+LiteLLM (`llm` extra) and needs a configured provider/API key.
 
 ## Testing
 
