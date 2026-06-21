@@ -15,11 +15,13 @@ from rich.table import Table
 
 from creature_lab import VERSION
 from creature_lab.controllers.sinusoid import sinusoid_targets
+from creature_lab.diagnostics import collect_doctor_checks, summarize_episode
 from creature_lab.evolve import hill_climb
 from creature_lab.hashing import spec_hash
 from creature_lab.library import default_creature, default_task
 from creature_lab.runs import (
     DEFAULT_RUNS_DIR,
+    load_run,
     new_run_id,
     resolve_trace_path,
     save_run,
@@ -114,6 +116,7 @@ def _build_meta(
         creature_hash=spec_hash(creature),
         task_hash=spec_hash(task),
         score_summary=score_summary,
+        warnings=validate_episode_inputs(creature, task),
     )
 
 
@@ -122,7 +125,7 @@ def _trace_from_frames(
     task: TaskSpec,
     frames: list[FrameState],
     *,
-    meta: TraceMeta | None = None,
+    meta: TraceMeta,
 ) -> EpisodeTrace:
     return EpisodeTrace(
         run_id=new_run_id(),
@@ -163,6 +166,22 @@ def _simulate(
 def version() -> None:
     """Print the Creature Lab version."""
     console.print(f"creature-lab {VERSION}")
+
+
+_STATUS_STYLE = {"ok": "green", "missing": "red", "warn": "yellow", "info": "cyan"}
+
+
+@app.command()
+def doctor() -> None:
+    """Check the environment: optional extras, providers, and that examples run."""
+    table = Table(title=f"creature-lab {VERSION} doctor")
+    table.add_column("check")
+    table.add_column("status")
+    table.add_column("detail")
+    for check in collect_doctor_checks():
+        style = _STATUS_STYLE.get(check.status, "white")
+        table.add_row(check.name, f"[{style}]{check.status}[/{style}]", check.detail)
+    console.print(table)
 
 
 @app.command()
@@ -410,6 +429,50 @@ def replay(
         f"{trace.task_name!r} via {trace.backend!r} — {len(trace.frames)} frame(s), "
         f"{duration:.2f}s, score={trace.score:.4f}"
     )
+
+
+@app.command()
+def inspect(
+    path: Annotated[Path, typer.Argument(help="Path to a run directory (or trace.json).")],
+) -> None:
+    """Print a detailed diagnostic summary of a saved run."""
+    _, task, trace = load_run(path)
+    summary = summarize_episode(trace, task)
+    meta = trace.meta
+
+    table = Table(title=f"run {trace.run_id!r}: {trace.creature_name!r} on {trace.task_name!r}")
+    table.add_column("field")
+    table.add_column("value")
+
+    def row(field: str, value: object) -> None:
+        table.add_row(field, str(value))
+
+    if meta is not None:
+        row("schema / lab version", f"{meta.schema_version} / {meta.lab_version}")
+        row("backend", meta.backend_version or "-")
+        row("creature hash", meta.creature_hash or "-")
+        row("task hash", meta.task_hash or "-")
+        row("timestep / seed", f"{meta.timestep} / {meta.seed}")
+    else:
+        row("metadata", "[yellow]none (legacy trace)[/yellow]")
+    row("frames / duration", f"{summary.frame_count} / {summary.duration:.2f}s")
+    row("final score", f"{summary.final_score:.4f}")
+    if summary.component_scores:
+        breakdown = ", ".join(f"{k}={v:.4f}" for k, v in summary.component_scores.items())
+        row("score breakdown", breakdown)
+    row("distance / forward", f"{summary.distance_traveled:.4f} / {summary.forward_distance:.4f}")
+    if summary.target_progress is not None:
+        row("target progress", f"{summary.target_progress:.4f}")
+    row("total joint motion", f"{summary.total_joint_motion:.4f}")
+    row("fell", "-" if summary.fell is None else summary.fell)
+    row("damage events", ", ".join(summary.damage_events) or "none")
+    row(
+        "contacts by part",
+        ", ".join(f"{part}={count}" for part, count in summary.contacts_by_part.items()) or "none",
+    )
+    console.print(table)
+    for warning in summary.warnings:
+        console.print(f"[yellow]warning:[/yellow] {warning}")
 
 
 @app.command()

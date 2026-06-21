@@ -21,6 +21,7 @@ class TraceMeta(StrictModel):
     creature_hash: str | None = None
     task_hash: str | None = None
     score_summary: dict[str, float] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class PartPose(StrictModel):

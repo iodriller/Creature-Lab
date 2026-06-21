@@ -62,6 +62,7 @@ def test_run_replay_export_pipeline(tmp_path):
     assert meta.creature_hash and meta.creature_hash.startswith("sha256:")
     assert meta.task_hash and meta.task_hash.startswith("sha256:")
     assert "total" in meta.score_summary
+    assert isinstance(meta.warnings, list)  # warnings are stored (empty for a clean run)
     # Hashes match an independent hash of the saved specs.
     from creature_lab.hashing import spec_hash
     from creature_lab.schema import TaskSpec
@@ -73,6 +74,11 @@ def test_run_replay_export_pipeline(tmp_path):
     replay = runner.invoke(app, ["replay", str(run_dir)])
     assert replay.exit_code == 0, replay.stdout
     assert trace.run_id in replay.stdout
+
+    inspect = runner.invoke(app, ["inspect", str(run_dir)])
+    assert inspect.exit_code == 0, inspect.stdout
+    assert "score breakdown" in inspect.stdout
+    assert trace.run_id in inspect.stdout
 
     gif = tmp_path / "out.gif"
     mp4 = tmp_path / "out.mp4"
@@ -117,6 +123,33 @@ def test_demo_streams_and_saves(tmp_path):
     assert (run_dir / "creature.json").exists()
     assert (run_dir / "task.json").exists()
     assert trace.meta is not None and trace.meta.creature_hash
+
+
+def test_soft_warning_is_stored_in_run_artifact(tmp_path):
+    # A motor swinging past its joint limit is a soft warning -> run continues but records it.
+    creature = json.loads(TRIPOD.read_text())
+    for motor in creature["motors"]:
+        motor["amplitude"] = 2.0  # joint limit is [-0.8, 0.8]
+    wild = tmp_path / "wild.json"
+    wild.write_text(json.dumps(creature))
+
+    runs_dir = tmp_path / "runs"
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            str(wild),
+            "--task",
+            str(EXAMPLES / "crawl_forward.json"),
+            "--runs-dir",
+            str(runs_dir),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+
+    trace = EpisodeTrace.model_validate_json((_only_run_dir(runs_dir) / "trace.json").read_text())
+    assert trace.meta is not None
+    assert any("exceeding its limit" in w for w in trace.meta.warnings)
 
 
 def test_validate_with_task_is_a_clean_preflight():
