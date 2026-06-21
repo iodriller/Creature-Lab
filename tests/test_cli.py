@@ -20,6 +20,30 @@ def test_version():
     assert "creature-lab" in result.stdout
 
 
+def test_doctor_runs_and_reports_checks():
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0, result.stdout
+    assert "doctor" in result.stdout
+    assert "platform" in result.stdout
+    assert "examples run" in result.stdout
+
+
+def test_inspect_reports_summary(tmp_path):
+    pytest.importorskip("pybullet")
+    runs_dir = tmp_path / "runs"
+    run = runner.invoke(
+        app, ["run", str(EXAMPLE), "--task", str(TASK), "--runs-dir", str(runs_dir)]
+    )
+    assert run.exit_code == 0, run.stdout
+    [run_dir] = list(runs_dir.iterdir())
+
+    result = runner.invoke(app, ["inspect", str(run_dir)])
+    assert result.exit_code == 0, result.stdout
+    assert "score breakdown" in result.stdout
+    assert "contacts by part" in result.stdout
+    assert "sha256:" in result.stdout
+
+
 def test_validate_example_creature():
     result = runner.invoke(app, ["validate", str(EXAMPLE)])
     assert result.exit_code == 0, result.stdout

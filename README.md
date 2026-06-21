@@ -46,6 +46,7 @@ Available today:
 ```bash
 # Core install (schemas + validate).
 uv sync
+uv run creature-lab doctor   # check which extras/providers are installed and that examples run
 uv run creature-lab validate examples/tripod.json
 uv run creature-lab validate examples/tripod.json --task examples/crawl_forward.json  # pre-flight
 
@@ -58,12 +59,17 @@ uv run creature-lab replay runs/<run-id>
 ```
 
 `run` saves a self-describing, reproducible run under `runs/<id>/` — `creature.json`,
-`task.json`, and `trace.json`. The trace's `meta` block records the schema/lab versions,
-backend (PyBullet) version, timestep, seed, content hashes of the creature and task, and a
-per-component score summary. `evolve` hill-climbs from a seed creature and saves the best one,
+`task.json`, and `trace.json`. Every newly created trace carries a `meta` block recording the
+schema/lab versions, backend (PyBullet) version, timestep, seed, content hashes of the creature
+and task, a per-component score summary, and any validation warnings (older traces without
+`meta` still load). `creature-lab inspect runs/<id>` prints a full diagnostic summary — hashes,
+versions, score breakdown, distance/target/energy, fall status, damage events, contacts by part,
+duration, and stored warnings. `evolve` hill-climbs from a seed creature and saves the best one,
 and `replay` summarizes a saved trace without re-running physics. Before simulating, every
 command cross-validates the creature against the task (e.g. a damage event must target a real
-part) — `validate --task` runs the same pre-flight check without simulating. Tasks score with a
+part) — `validate --task` runs the same pre-flight check without simulating. `creature-lab
+doctor` reports which optional extras and LLM providers are configured and whether the bundled
+example can run. Tasks score with a
 weighted blend of forward distance, progress toward a target, energy use, and a fall penalty
 (see `examples/*.json`). Joints take an optional `rest_orientation` quaternion so limbs can be
 angled, not just axis-aligned; axes and quaternions are normalized on load.
