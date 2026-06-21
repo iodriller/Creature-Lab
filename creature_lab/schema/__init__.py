@@ -21,6 +21,7 @@ from creature_lab.schema.creature import (
     PartSpec,
     ShapeType,
 )
+from creature_lab.schema.summary import EpisodeSummary
 from creature_lab.schema.task import (
     DamageEventSpec,
     RewardSpec,
@@ -45,6 +46,7 @@ __all__ = [
     "ContactSpec",
     "CreatureSpec",
     "DamageEventSpec",
+    "EpisodeSummary",
     "EpisodeTrace",
     "FrameState",
     "JointLimit",

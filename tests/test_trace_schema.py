@@ -36,7 +36,9 @@ def test_trace_with_meta_round_trips():
         creature_hash="sha256:abc",
         task_hash="sha256:def",
         score_summary={"forward": 1.0, "total": 1.0},
+        warnings=["large timestep"],
     )
+    assert TraceMeta(schema_version="1", lab_version="0.1.0").warnings == []
     trace = EpisodeTrace.model_validate(
         {
             "run_id": "r1",
