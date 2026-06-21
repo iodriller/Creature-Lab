@@ -167,6 +167,24 @@ A second pass that ran the whole pipeline and read every module. Findings:
   command runs the loop and saves `agent.json`; `--offline` makes it runnable and e2e-testable
   with no API key.
 
-Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (99 tests,
-including 7 end-to-end scenarios) all green, and the full CLI loop
+- **P0a ✅ — Reproducible, self-describing runs.** `save_run` now also writes `task.json`
+  (`load_run` reads all three back). `EpisodeTrace` carries an optional `TraceMeta`
+  (`schema/trace.py`): schema/lab versions, PyBullet backend version, timestep, seed, canonical
+  `creature_hash`/`task_hash` (new `hashing.spec_hash`), and a per-component `score_summary`
+  (surfaced from the backend via `score_summary()` / `scoring.score_components`).
+- **P0b ✅ — Pre-simulation cross-validation.** New `validation.validate_episode_inputs` raises
+  `EpisodeInputError` on hard mistakes (e.g. `damage_event.part_id` not on the creature) and
+  returns warnings for soft issues (unused target, large timestep, no objective, motor amplitude
+  exceeding a joint limit). Every `run`/`demo`/`evolve`/`ask` runs it first; `validate --task`
+  exposes it as a no-sim pre-flight.
+- **P1a ✅ — Normalized physical-math fields.** `JointSpec.axis` and `rest_orientation` are
+  normalized to unit length on load (degenerate/zero values still rejected). Motor-amplitude vs
+  joint-limit is reported as a pre-sim warning (kept soft so aggressive motors stay usable).
+- **P1b ✅ — Viewer fidelity.** The Viser viewer renders cylinders with the native
+  `add_cylinder` and capsules as true rounded-end meshes via `trimesh.creation.capsule` +
+  `add_mesh_trimesh` (matching the PyBullet export); `view` auto-loads `task.json` for the target
+  marker.
+
+Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (119 tests,
+including end-to-end scenarios) all green, and the full CLI loop
 (`validate → run → replay → export → evolve → ask → demo`) works.

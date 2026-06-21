@@ -1,7 +1,13 @@
 """Tests for episode trace persistence (creature_lab.runs)."""
 
-from creature_lab.runs import load_trace, new_run_id, save_trace
-from creature_lab.schema import EpisodeTrace
+from creature_lab.runs import load_run, load_trace, new_run_id, save_run, save_trace
+from creature_lab.schema import CreatureSpec, EpisodeTrace, TaskSpec
+
+_CREATURE = {
+    "name": "tripod",
+    "parts": [{"id": "torso", "shape": "box", "size": [0.4, 0.2, 0.1], "mass": 1.0}],
+}
+_TASK = {"name": "crawl_forward", "duration": 1.0}
 
 
 def _trace(run_id: str) -> EpisodeTrace:
@@ -34,3 +40,36 @@ def test_load_trace_from_run_directory(tmp_path):
 
 def test_run_ids_are_unique():
     assert new_run_id() != new_run_id()
+
+
+def test_save_run_writes_task_json(tmp_path):
+    creature = CreatureSpec.model_validate(_CREATURE)
+    task = TaskSpec.model_validate(_TASK)
+    trace = _trace(new_run_id())
+
+    run_dir = save_run(creature, trace, runs_dir=tmp_path, task=task)
+
+    assert (run_dir / "creature.json").exists()
+    assert (run_dir / "task.json").exists()
+    assert (run_dir / "trace.json").exists()
+
+
+def test_load_run_round_trips_all_three(tmp_path):
+    creature = CreatureSpec.model_validate(_CREATURE)
+    task = TaskSpec.model_validate(_TASK)
+    trace = _trace(new_run_id())
+    run_dir = save_run(creature, trace, runs_dir=tmp_path, task=task)
+
+    loaded_creature, loaded_task, loaded_trace = load_run(run_dir)
+    assert loaded_creature == creature
+    assert loaded_task == task
+    assert loaded_trace == trace
+
+
+def test_load_run_task_is_none_when_absent(tmp_path):
+    creature = CreatureSpec.model_validate(_CREATURE)
+    trace = _trace(new_run_id())
+    run_dir = save_run(creature, trace, runs_dir=tmp_path)  # no task
+
+    _, loaded_task, _ = load_run(run_dir)
+    assert loaded_task is None

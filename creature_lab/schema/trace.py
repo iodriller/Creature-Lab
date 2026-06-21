@@ -6,6 +6,22 @@ from pydantic import Field, field_validator, model_validator
 
 from creature_lab.schema.base import Quaternion, StrictModel, Vector3
 
+#: Version of the EpisodeTrace artifact format (bump on breaking changes).
+TRACE_SCHEMA_VERSION = "1"
+
+
+class TraceMeta(StrictModel):
+    """Provenance/reproducibility metadata for an episode (see docs/MVP_PLAN.md §5.4)."""
+
+    schema_version: str
+    lab_version: str
+    backend_version: str | None = None
+    timestep: float | None = None
+    seed: int | None = None
+    creature_hash: str | None = None
+    task_hash: str | None = None
+    score_summary: dict[str, float] = Field(default_factory=dict)
+
 
 class PartPose(StrictModel):
     position: Vector3
@@ -50,6 +66,7 @@ class EpisodeTrace(StrictModel):
     backend: str = Field(min_length=1)
     score: float = Field(allow_inf_nan=False)
     frames: list[FrameState] = Field(min_length=1)
+    meta: TraceMeta | None = None
 
     @field_validator("run_id", "creature_name", "task_name", "backend")
     @classmethod
