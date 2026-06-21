@@ -148,3 +148,19 @@ def test_zero_rest_orientation_is_rejected():
     creature["joints"][0]["rest_orientation"] = [0.0, 0.0, 0.0, 0.0]
     with pytest.raises(ValidationError, match="zero quaternion"):
         CreatureSpec.model_validate(creature)
+
+
+def test_hinge_axis_is_normalized_to_unit_length():
+    creature = _two_part_creature()
+    creature["joints"][0]["axis"] = [0.0, 2.0, 0.0]
+    spec = CreatureSpec.model_validate(creature)
+    assert spec.joints[0].axis == (0.0, 1.0, 0.0)
+
+
+def test_rest_orientation_is_normalized_to_unit_length():
+    creature = _two_part_creature()
+    creature["joints"][0]["rest_orientation"] = [0.0, 0.0, 2.0, 0.0]
+    spec = CreatureSpec.model_validate(creature)
+    norm = sum(c * c for c in spec.joints[0].rest_orientation) ** 0.5
+    assert norm == pytest.approx(1.0)
+    assert spec.joints[0].rest_orientation == (0.0, 0.0, 1.0, 0.0)

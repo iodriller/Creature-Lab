@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterator
 from enum import StrEnum
 from typing import Any
@@ -9,6 +10,9 @@ from typing import Any
 from pydantic import Field, field_validator, model_validator
 
 from creature_lab.schema.base import ColorRGB, JointLimit, Quaternion, StrictModel, Vector3
+
+#: Vectors/quaternions with norm below this are treated as degenerate (not normalized).
+_UNIT_TOLERANCE = 1e-9
 
 
 class ShapeType(StrEnum):
@@ -99,12 +103,21 @@ class JointSpec(StrictModel):
             raise ValueError("joint identifiers must not be blank")
         return value
 
+    @field_validator("axis")
+    @classmethod
+    def normalize_axis(cls, value: Vector3) -> Vector3:
+        norm = math.sqrt(sum(component * component for component in value))
+        if norm < _UNIT_TOLERANCE:
+            return value  # near-zero; a zero hinge axis is rejected in validate_joint
+        return tuple(component / norm for component in value)
+
     @field_validator("rest_orientation")
     @classmethod
-    def validate_rest_orientation(cls, value: Quaternion) -> Quaternion:
-        if all(component == 0 for component in value):
+    def normalize_rest_orientation(cls, value: Quaternion) -> Quaternion:
+        norm = math.sqrt(sum(component * component for component in value))
+        if norm < _UNIT_TOLERANCE:
             raise ValueError("rest_orientation must not be the zero quaternion")
-        return value
+        return tuple(component / norm for component in value)
 
     @field_validator("limit")
     @classmethod

@@ -10,6 +10,32 @@ from __future__ import annotations
 from creature_lab.schema import RewardSpec
 
 
+def score_components(
+    reward: RewardSpec,
+    *,
+    forward_distance: float,
+    target_progress: float = 0.0,
+    energy: float = 0.0,
+    fallen: bool = False,
+) -> dict[str, float]:
+    """Break the score into its weighted components plus the ``total``.
+
+    - ``forward_distance``: signed displacement along +x from the start.
+    - ``target_progress``: how much closer to the target than at the start
+      (positive = moved toward it).
+    - ``energy``: accumulated actuation effort (always penalized).
+    - ``fallen``: whether the creature has toppled.
+    """
+    components = {
+        "forward": reward.forward_distance * forward_distance,
+        "target": reward.target_distance * target_progress,
+        "energy": -reward.energy_penalty * energy,
+        "fall": -reward.fall_penalty if fallen else 0.0,
+    }
+    components["total"] = sum(components.values())
+    return components
+
+
 def episode_score(
     reward: RewardSpec,
     *,
@@ -18,17 +44,11 @@ def episode_score(
     energy: float = 0.0,
     fallen: bool = False,
 ) -> float:
-    """Combine reward components into a single score.
-
-    - ``forward_distance``: signed displacement along +x from the start.
-    - ``target_progress``: how much closer to the target than at the start
-      (positive = moved toward it).
-    - ``energy``: accumulated actuation effort (always penalized).
-    - ``fallen``: whether the creature has toppled.
-    """
-    score = reward.forward_distance * forward_distance
-    score += reward.target_distance * target_progress
-    score -= reward.energy_penalty * energy
-    if fallen:
-        score -= reward.fall_penalty
-    return score
+    """Combine reward components into a single scalar score."""
+    return score_components(
+        reward,
+        forward_distance=forward_distance,
+        target_progress=target_progress,
+        energy=energy,
+        fallen=fallen,
+    )["total"]
