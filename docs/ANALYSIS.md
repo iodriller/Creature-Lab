@@ -185,6 +185,21 @@ A second pass that ran the whole pipeline and read every module. Findings:
   `add_mesh_trimesh` (matching the PyBullet export); `view` auto-loads `task.json` for the target
   marker.
 
-Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (119 tests,
+### Usability round (doctor / inspect / stored warnings / summaries)
+
+- **D1 ✅ — `doctor` command.** `diagnostics.collect_doctor_checks` reports platform, each optional
+  extra (`sim`/`viz`/`export`/`llm` via `importlib.util.find_spec`), LLM provider key presence, and
+  whether the built-in example validates and simulates one step. `creature-lab doctor` renders it.
+- **D2 ✅ — Required metadata + `inspect`.** New traces must carry `meta` (`_trace_from_frames`
+  now requires it; the schema field stays optional for old traces). `creature-lab inspect
+  runs/<id>` prints hashes, versions, score breakdown, distance/target/energy, fall, damage
+  events, contacts-by-part, duration, and warnings.
+- **D3 ✅ — Stored validation warnings.** `TraceMeta.warnings` now persists the pre-sim
+  `validate_episode_inputs` output in every saved run (no separate manifest).
+- **D4 ✅ — `EpisodeSummary` + `summarize_episode`.** New `schema/summary.py` model and a pure
+  `diagnostics.summarize_episode(trace, task)` that derives the metrics above from a trace
+  (`total_joint_motion` is a trace-derived actuation-effort proxy).
+
+Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (126 tests,
 including end-to-end scenarios) all green, and the full CLI loop
-(`validate → run → replay → export → evolve → ask → demo`) works.
+(`doctor → validate → run → inspect → replay → export → evolve → ask → demo`) works.
