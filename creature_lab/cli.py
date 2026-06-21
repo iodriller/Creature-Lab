@@ -423,7 +423,7 @@ def replay(
 ) -> None:
     """Print a summary of a saved episode trace."""
     trace = _load_spec(resolve_trace_path(path), EpisodeTrace)
-    duration = trace.frames[-1].t - trace.frames[0].t
+    duration = trace.frames[-1].t  # total simulated time (final frame timestamp)
     console.print(
         f"[green]trace[/green] {trace.run_id!r}: {trace.creature_name!r} on "
         f"{trace.task_name!r} via {trace.backend!r} — {len(trace.frames)} frame(s), "
@@ -455,15 +455,18 @@ def inspect(
         row("timestep / seed", f"{meta.timestep} / {meta.seed}")
     else:
         row("metadata", "[yellow]none (legacy trace)[/yellow]")
-    row("frames / duration", f"{summary.frame_count} / {summary.duration:.2f}s")
+    row("frames / duration (s)", f"{summary.frame_count} / {summary.duration:.2f}")
     row("final score", f"{summary.final_score:.4f}")
     if summary.component_scores:
         breakdown = ", ".join(f"{k}={v:.4f}" for k, v in summary.component_scores.items())
         row("score breakdown", breakdown)
-    row("distance / forward", f"{summary.distance_traveled:.4f} / {summary.forward_distance:.4f}")
+    row(
+        "net displacement / forward Δx",
+        f"{summary.net_displacement:.4f} / {summary.forward_displacement:.4f}",
+    )
     if summary.target_progress is not None:
         row("target progress", f"{summary.target_progress:.4f}")
-    row("total joint motion", f"{summary.total_joint_motion:.4f}")
+    row("joint motion (Σ|Δrad|)", f"{summary.total_joint_motion:.4f}")
     row("fell", "-" if summary.fell is None else summary.fell)
     row("damage events", ", ".join(summary.damage_events) or "none")
     row(
