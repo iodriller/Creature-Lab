@@ -13,12 +13,16 @@ from creature_lab.schema.base import StrictModel
 
 class EpisodeSummary(StrictModel):
     frame_count: int = Field(ge=0)
+    #: Total simulated time in seconds (timestamp of the final frame; episodes start at t~=0).
     duration: float = Field(ge=0)
     final_score: float
     component_scores: dict[str, float] = Field(default_factory=dict)
-    distance_traveled: float = Field(ge=0)
-    forward_distance: float
+    #: Straight-line displacement of the body centroid, first frame -> last frame.
+    net_displacement: float = Field(ge=0)
+    #: Signed +x component of that centroid displacement (the forward objective).
+    forward_displacement: float
     target_progress: float | None = None
+    #: Sum of |Δ joint angle| over the episode (radians) — an actuation-effort proxy.
     total_joint_motion: float = Field(ge=0)
     fell: bool | None = None
     damage_events: list[str] = Field(default_factory=list)

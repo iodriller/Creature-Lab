@@ -21,6 +21,8 @@ sim = [
 ]
 viz = [
     "viser>=1.0",
+    "trimesh>=4.0",  # true capsule meshes in the viewer
+    "numpy>=1.26",  # mesh vertex colors
 ]
 export = [
     "imageio>=2.31",

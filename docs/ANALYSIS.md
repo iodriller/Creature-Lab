@@ -199,7 +199,13 @@ A second pass that ran the whole pipeline and read every module. Findings:
 - **D4 ✅ — `EpisodeSummary` + `summarize_episode`.** New `schema/summary.py` model and a pure
   `diagnostics.summarize_episode(trace, task)` that derives the metrics above from a trace
   (`total_joint_motion` is a trace-derived actuation-effort proxy).
+- **D5 ✅ — Follow-ups.** The `viz` extra now declares `trimesh`/`numpy` explicitly (the viewer's
+  capsule path imports them) and `doctor`'s viz check verifies all three. CI gained a CLI smoke
+  step (`doctor` + `validate --task`). `EpisodeSummary` metric names were clarified —
+  `distance_traveled`→`net_displacement`, `forward_distance`→`forward_displacement` (both are net
+  centroid displacements) — and `duration` is now the final frame's timestamp (total simulated
+  time, e.g. 3.00s) rather than the one-timestep-short frame span; `replay` matches.
 
-Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (126 tests,
+Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (128 tests,
 including end-to-end scenarios) all green, and the full CLI loop
 (`doctor → validate → run → inspect → replay → export → evolve → ask → demo`) works.
