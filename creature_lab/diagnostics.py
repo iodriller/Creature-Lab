@@ -47,7 +47,7 @@ def collect_doctor_checks() -> list[DoctorCheck]:
             f"Python {platform.python_version()} on {platform.platform()}",
         ),
         _extra_check("sim (pybullet)", "pybullet", "uv sync --extra sim"),
-        _extra_check("viz (viser)", "viser", "uv sync --extra viz"),
+        _viz_check(),
         _export_check(),
         _llm_check(),
         _examples_check(),
@@ -59,6 +59,17 @@ def _extra_check(name: str, module: str, hint: str) -> DoctorCheck:
     if _installed(module):
         return DoctorCheck(name, "ok", f"{module} importable")
     return DoctorCheck(name, "missing", f"not installed — `{hint}`")
+
+
+def _viz_check() -> DoctorCheck:
+    if not _installed("viser"):
+        return DoctorCheck("viz (viser)", "missing", "not installed — `uv sync --extra viz`")
+    missing = [module for module in ("trimesh", "numpy") if not _installed(module)]
+    if missing:
+        return DoctorCheck(
+            "viz (viser)", "warn", f"viser present but {', '.join(missing)} missing (capsules)"
+        )
+    return DoctorCheck("viz (viser)", "ok", "viser + trimesh + numpy importable")
 
 
 def _export_check() -> DoctorCheck:
@@ -115,12 +126,13 @@ def _examples_check() -> DoctorCheck:
 def summarize_episode(trace: EpisodeTrace, task: TaskSpec | None = None) -> EpisodeSummary:
     """Compute a compact summary of a trace (pure; no backend)."""
     frames = trace.frames
-    duration = frames[-1].t - frames[0].t
+    # Total simulated time: the final frame's timestamp (the sim began at t=0, first frame at dt).
+    duration = frames[-1].t
 
     first_centroid = _centroid(frames[0])
     last_centroid = _centroid(frames[-1])
     displacement = tuple(b - a for a, b in zip(first_centroid, last_centroid, strict=True))
-    distance_traveled = math.sqrt(sum(component * component for component in displacement))
+    net_displacement = math.sqrt(sum(component * component for component in displacement))
 
     target_progress: float | None = None
     if task is not None and task.target is not None:
@@ -149,8 +161,8 @@ def summarize_episode(trace: EpisodeTrace, task: TaskSpec | None = None) -> Epis
         duration=duration,
         final_score=trace.score,
         component_scores=component_scores,
-        distance_traveled=distance_traveled,
-        forward_distance=displacement[0],
+        net_displacement=net_displacement,
+        forward_displacement=displacement[0],
         target_progress=target_progress,
         total_joint_motion=_total_joint_motion(trace),
         fell=fell,

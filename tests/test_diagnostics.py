@@ -52,10 +52,10 @@ def _trace() -> EpisodeTrace:
 def test_summarize_episode_basic_fields():
     summary = summarize_episode(_trace())
     assert summary.frame_count == 2
-    assert summary.duration == 0.5
+    assert summary.duration == 0.5  # final frame timestamp
     assert summary.final_score == 1.5
-    assert summary.forward_distance == 1.0
-    assert summary.distance_traveled == 1.0
+    assert summary.forward_displacement == 1.0
+    assert summary.net_displacement == 1.0
     assert summary.total_joint_motion == 0.3  # |0.3 - 0.0|
     assert summary.fell is False  # fall component is 0
     assert summary.damage_events == ["damage:leg_a"]
@@ -78,3 +78,28 @@ def test_summarize_episode_without_meta_has_none_fell():
     assert summary.fell is None
     assert summary.component_scores == {}
     assert summary.warnings == []
+
+
+def test_duration_is_final_frame_timestamp_not_span():
+    # Frames at t=0.1 and t=0.3: duration is the final timestamp (0.3), not the span (0.2).
+    trace = EpisodeTrace.model_validate(
+        {
+            "run_id": "r2",
+            "creature_name": "c",
+            "task_name": "t",
+            "backend": "pybullet",
+            "score": 0.0,
+            "frames": [
+                {"t": 0.1, "parts": {"a": {"position": [0, 0, 0]}}, "score": 0.0},
+                {"t": 0.3, "parts": {"a": {"position": [0, 0, 0]}}, "score": 0.0},
+            ],
+        }
+    )
+    assert summarize_episode(trace).duration == 0.3
+
+
+def test_doctor_viz_check_reports_trimesh_and_numpy():
+    viz = {check.name: check for check in collect_doctor_checks()}["viz (viser)"]
+    assert viz.status in {"ok", "warn", "missing"}
+    if viz.status == "ok":
+        assert "trimesh" in viz.detail and "numpy" in viz.detail
