@@ -45,10 +45,19 @@ def _add_part(scene: Any, name: str, part: PartSpec) -> Any:
     if part.shape == ShapeType.SPHERE:
         assert part.radius is not None
         return scene.add_icosphere(name, radius=part.radius, color=color)
-    # Capsule/cylinder: approximate with a bounding box along the local z axis.
     assert part.radius is not None and part.length is not None
-    diameter = 2 * part.radius
-    return scene.add_box(name, color=color, dimensions=(diameter, diameter, part.length))
+    if part.shape == ShapeType.CYLINDER:
+        # Native Viser cylinder, along the local z axis (matches the schema/backend).
+        return scene.add_cylinder(name, radius=part.radius, height=part.length, color=color)
+    # Capsule: Viser has no native primitive, so build a true capsule mesh (rounded
+    # ends) with trimesh — matching the PyBullet export. trimesh ships with the viz extra.
+    import numpy as np
+    import trimesh
+
+    centered = trimesh.transformations.translation_matrix((0.0, 0.0, -part.length / 2))
+    mesh = trimesh.creation.capsule(height=part.length, radius=part.radius, transform=centered)
+    mesh.visual.vertex_colors = np.array([*color, 255], dtype=np.uint8)
+    return scene.add_mesh_trimesh(name, mesh)
 
 
 def build_scene(

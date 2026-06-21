@@ -16,7 +16,13 @@ import pybullet_data
 from creature_lab.schema import CreatureSpec, PartPose, PartSpec, ShapeType, TaskSpec
 from creature_lab.schema.creature import JointType
 from creature_lab.schema.trace import ContactSpec, EpisodeTrace, FrameState
-from creature_lab.scoring import episode_score
+from creature_lab.scoring import score_components
+
+
+def backend_version() -> str:
+    """Human-readable PyBullet backend version, e.g. ``pybullet api 201``."""
+    return f"pybullet api {pybullet.getAPIVersion()}"
+
 
 _DEFAULT_COLOR = (0.6, 0.6, 0.6)
 _DEFAULT_HINGE_LIMIT = (-math.pi, math.pi)
@@ -66,6 +72,7 @@ class PyBulletBackend:
         self._initial_root_x = 0.0
         self._initial_target_distance = 0.0
         self._energy = 0.0
+        self._last_score_components: dict[str, float] = {}
         self._damage_fired = False
 
     def build(self, creature: CreatureSpec, task: TaskSpec) -> None:
@@ -156,6 +163,10 @@ class PyBulletBackend:
 
     def close(self) -> None:
         pybullet.disconnect(physicsClientId=self._client)
+
+    def score_summary(self) -> dict[str, float]:
+        """Per-component breakdown of the most recently read frame's score."""
+        return dict(self._last_score_components)
 
     def set_pose(self, frame: FrameState) -> None:
         """Kinematically pose the body from a recorded frame, without stepping physics.
@@ -319,13 +330,14 @@ class PyBulletBackend:
             target_progress = self._initial_target_distance - current_distance
         # Body's local +z expressed in world coordinates; small z-component => toppled.
         body_up_z = pybullet.getMatrixFromQuaternion(base_orientation)[8]
-        score = episode_score(
+        self._last_score_components = score_components(
             self._task.reward,
             forward_distance=forward_distance,
             target_progress=target_progress,
             energy=self._energy,
             fallen=body_up_z < 0.5,
         )
+        score = self._last_score_components["total"]
 
         return FrameState(
             t=self._t,

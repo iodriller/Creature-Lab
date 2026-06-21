@@ -45,12 +45,30 @@ def test_run_replay_export_pipeline(tmp_path):
     assert run.exit_code == 0, run.stdout
 
     run_dir = _only_run_dir(runs_dir)
-    # Run is self-describing and the trace round-trips through the schema.
+    # Run is self-describing: creature, task, and trace are all written.
     creature = CreatureSpec.model_validate_json((run_dir / "creature.json").read_text())
     trace = EpisodeTrace.model_validate_json((run_dir / "trace.json").read_text())
+    assert (run_dir / "task.json").exists()
     assert creature.name == "tripod"
     assert len(trace.frames) == 180
     assert any(frame.contacts for frame in trace.frames)
+
+    # Reproducibility metadata is populated.
+    meta = trace.meta
+    assert meta is not None
+    assert meta.schema_version and meta.lab_version
+    assert meta.backend_version and meta.backend_version.startswith("pybullet")
+    assert meta.timestep == pytest.approx(1 / 60)
+    assert meta.creature_hash and meta.creature_hash.startswith("sha256:")
+    assert meta.task_hash and meta.task_hash.startswith("sha256:")
+    assert "total" in meta.score_summary
+    # Hashes match an independent hash of the saved specs.
+    from creature_lab.hashing import spec_hash
+    from creature_lab.schema import TaskSpec
+
+    saved_task = TaskSpec.model_validate_json((run_dir / "task.json").read_text())
+    assert meta.creature_hash == spec_hash(creature)
+    assert meta.task_hash == spec_hash(saved_task)
 
     replay = runner.invoke(app, ["replay", str(run_dir)])
     assert replay.exit_code == 0, replay.stdout
@@ -97,6 +115,29 @@ def test_demo_streams_and_saves(tmp_path):
     trace = EpisodeTrace.model_validate_json((run_dir / "trace.json").read_text())
     assert trace.creature_name == "tripod"
     assert (run_dir / "creature.json").exists()
+    assert (run_dir / "task.json").exists()
+    assert trace.meta is not None and trace.meta.creature_hash
+
+
+def test_validate_with_task_is_a_clean_preflight():
+    # No simulation; just schema + cross-validation. Does not need any backend.
+    result = runner.invoke(
+        app, ["validate", str(TRIPOD), "--task", str(EXAMPLES / "crawl_forward.json")]
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "compatible" in result.stdout
+
+
+def test_run_aborts_on_unknown_damage_part(tmp_path):
+    bad_task = tmp_path / "bad_task.json"
+    bad_task.write_text(
+        '{"name": "boom", "duration": 2.0, "damage_event": {"time": 1.0, "part_id": "ghost"}}'
+    )
+    result = runner.invoke(
+        app, ["run", str(TRIPOD), "--task", str(bad_task), "--runs-dir", str(tmp_path / "runs")]
+    )
+    assert result.exit_code == 1
+    assert "unknown part" in result.stdout
 
 
 def test_ask_offline_designs_and_saves_agent_trace(tmp_path):

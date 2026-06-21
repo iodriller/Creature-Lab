@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from creature_lab.schema import EpisodeTrace, FrameState
+from creature_lab.schema import EpisodeTrace, FrameState, TraceMeta
 
 
 def _frame(t: float, score: float = 0.0) -> dict:
@@ -23,6 +23,34 @@ def test_trace_round_trips():
     )
     restored = EpisodeTrace.model_validate_json(trace.model_dump_json())
     assert restored == trace
+    assert trace.meta is None  # meta is optional and defaults to None
+
+
+def test_trace_with_meta_round_trips():
+    meta = TraceMeta(
+        schema_version="1",
+        lab_version="0.1.0",
+        backend_version="pybullet api 201",
+        timestep=1 / 60,
+        seed=7,
+        creature_hash="sha256:abc",
+        task_hash="sha256:def",
+        score_summary={"forward": 1.0, "total": 1.0},
+    )
+    trace = EpisodeTrace.model_validate(
+        {
+            "run_id": "r1",
+            "creature_name": "tripod",
+            "task_name": "crawl_forward",
+            "backend": "pybullet",
+            "score": 1.0,
+            "frames": [_frame(0.0, 1.0)],
+            "meta": meta.model_dump(),
+        }
+    )
+    restored = EpisodeTrace.model_validate_json(trace.model_dump_json())
+    assert restored == trace
+    assert restored.meta == meta
 
 
 def test_frame_requires_parts():
