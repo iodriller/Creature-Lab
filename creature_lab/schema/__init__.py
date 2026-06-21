@@ -35,6 +35,7 @@ from creature_lab.schema.trace import (
     EpisodeTrace,
     FrameState,
     PartPose,
+    TraceMeta,
 )
 
 __all__ = [
@@ -62,5 +63,6 @@ __all__ = [
     "TaskSpec",
     "TerrainSpec",
     "TerrainType",
+    "TraceMeta",
     "Vector3",
 ]

@@ -47,6 +47,7 @@ Available today:
 # Core install (schemas + validate).
 uv sync
 uv run creature-lab validate examples/tripod.json
+uv run creature-lab validate examples/tripod.json --task examples/crawl_forward.json  # pre-flight
 
 # Physics commands need the optional PyBullet backend.
 uv sync --extra sim
@@ -56,11 +57,16 @@ uv run creature-lab evolve examples/tripod.json --task examples/crawl_forward.js
 uv run creature-lab replay runs/<run-id>
 ```
 
-`run` saves a self-describing run (`creature.json` + `trace.json`) under `runs/`, `evolve`
-hill-climbs from a seed creature and saves the best one, and `replay` summarizes a saved
-trace without re-running physics. Tasks score with a weighted blend of forward distance,
-progress toward a target, energy use, and a fall penalty (see `examples/*.json`). Joints take
-an optional `rest_orientation` quaternion so limbs can be angled, not just axis-aligned.
+`run` saves a self-describing, reproducible run under `runs/<id>/` — `creature.json`,
+`task.json`, and `trace.json`. The trace's `meta` block records the schema/lab versions,
+backend (PyBullet) version, timestep, seed, content hashes of the creature and task, and a
+per-component score summary. `evolve` hill-climbs from a seed creature and saves the best one,
+and `replay` summarizes a saved trace without re-running physics. Before simulating, every
+command cross-validates the creature against the task (e.g. a damage event must target a real
+part) — `validate --task` runs the same pre-flight check without simulating. Tasks score with a
+weighted blend of forward distance, progress toward a target, energy use, and a fall penalty
+(see `examples/*.json`). Joints take an optional `rest_orientation` quaternion so limbs can be
+angled, not just axis-aligned; axes and quaternions are normalized on load.
 
 ```bash
 # Live browser viewer needs the optional Viser dependency (plus the sim backend).
@@ -81,8 +87,10 @@ uv run creature-lab ask "make it crawl farther" examples/tripod.json \
 ```
 
 `demo` is the headline "clone → one command → a weird little creature moves" experience: it
-streams the simulation to the browser live, then saves the run. `view` and `export` render
-recorded poses only — they never re-run physics, matching the
+streams the simulation to the browser live, then saves the run. The viewer renders boxes,
+spheres, true cylinders, and true (rounded-end) capsules; `view` auto-loads `task.json` from a
+run directory to draw the target marker. `view` and `export` render recorded poses only — they
+never re-run physics, matching the
 project's "replays are portable, exact physics is backend-dependent" promise. Install
 everything with `uv sync --all-extras`. For headless use (CI, screenshots), `demo --no-hold`
 streams one pass, saves the run, and exits instead of serving until interrupted.

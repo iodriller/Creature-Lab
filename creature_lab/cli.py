@@ -16,6 +16,7 @@ from rich.table import Table
 from creature_lab import VERSION
 from creature_lab.controllers.sinusoid import sinusoid_targets
 from creature_lab.evolve import hill_climb
+from creature_lab.hashing import spec_hash
 from creature_lab.library import default_creature, default_task
 from creature_lab.runs import (
     DEFAULT_RUNS_DIR,
@@ -23,7 +24,9 @@ from creature_lab.runs import (
     resolve_trace_path,
     save_run,
 )
-from creature_lab.schema import CreatureSpec, EpisodeTrace, FrameState, TaskSpec
+from creature_lab.schema import CreatureSpec, EpisodeTrace, FrameState, TaskSpec, TraceMeta
+from creature_lab.schema.trace import TRACE_SCHEMA_VERSION
+from creature_lab.validation import EpisodeInputError, validate_episode_inputs
 
 app = typer.Typer(help="Minimal, visual, backend-agnostic creature simulation lab.")
 console = Console()
@@ -60,6 +63,26 @@ def _load_creature_for_trace(path: Path, creature_path: Path | None) -> Creature
     return _load_spec(creature_path, CreatureSpec)
 
 
+def _load_task_for_trace(path: Path, task_path: Path | None) -> TaskSpec | None:
+    """Load the task for a trace: explicit --task, else task.json in the run dir if present."""
+    if task_path is not None:
+        return _load_spec(task_path, TaskSpec)
+    run_dir = path if path.is_dir() else path.parent
+    candidate = run_dir / "task.json"
+    return _load_spec(candidate, TaskSpec) if candidate.exists() else None
+
+
+def _check_inputs(creature: CreatureSpec, task: TaskSpec) -> None:
+    """Cross-validate inputs before simulating: warn on soft issues, abort on hard errors."""
+    try:
+        warnings = validate_episode_inputs(creature, task)
+    except EpisodeInputError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    for warning in warnings:
+        console.print(f"[yellow]warning:[/yellow] {warning}")
+
+
 def _require_backend() -> type:
     """Import the PyBullet backend, exiting with a friendly message if it is missing."""
     try:
@@ -72,8 +95,34 @@ def _require_backend() -> type:
     return PyBulletBackend
 
 
+def _build_meta(
+    creature: CreatureSpec,
+    task: TaskSpec,
+    *,
+    seed: int | None,
+    score_summary: dict[str, float],
+) -> TraceMeta:
+    """Build the provenance/reproducibility metadata stamped into a trace."""
+    from creature_lab.backends.pybullet_backend import backend_version
+
+    return TraceMeta(
+        schema_version=TRACE_SCHEMA_VERSION,
+        lab_version=VERSION,
+        backend_version=backend_version(),
+        timestep=task.timestep,
+        seed=seed,
+        creature_hash=spec_hash(creature),
+        task_hash=spec_hash(task),
+        score_summary=score_summary,
+    )
+
+
 def _trace_from_frames(
-    creature: CreatureSpec, task: TaskSpec, frames: list[FrameState]
+    creature: CreatureSpec,
+    task: TaskSpec,
+    frames: list[FrameState],
+    *,
+    meta: TraceMeta | None = None,
 ) -> EpisodeTrace:
     return EpisodeTrace(
         run_id=new_run_id(),
@@ -82,10 +131,13 @@ def _trace_from_frames(
         backend="pybullet",
         score=frames[-1].score,
         frames=frames,
+        meta=meta,
     )
 
 
-def _simulate(creature: CreatureSpec, task: TaskSpec, *, gui: bool = False) -> EpisodeTrace:
+def _simulate(
+    creature: CreatureSpec, task: TaskSpec, *, gui: bool = False, seed: int | None = None
+) -> EpisodeTrace:
     """Run one PyBullet episode and return its trace (without saving)."""
     backend = _require_backend()(gui=gui)
     try:
@@ -95,6 +147,7 @@ def _simulate(creature: CreatureSpec, task: TaskSpec, *, gui: bool = False) -> E
             t = step_index * task.timestep
             backend.apply_motor_targets(sinusoid_targets(creature, t))
             frames.append(backend.step(task.timestep))
+        score_summary = backend.score_summary()
     finally:
         backend.close()
 
@@ -102,7 +155,8 @@ def _simulate(creature: CreatureSpec, task: TaskSpec, *, gui: bool = False) -> E
         console.print("[yellow]warning:[/yellow] task duration too short to run any steps")
         raise typer.Exit(code=1)
 
-    return _trace_from_frames(creature, task, frames)
+    meta = _build_meta(creature, task, seed=seed, score_summary=score_summary)
+    return _trace_from_frames(creature, task, frames, meta=meta)
 
 
 @app.command()
@@ -114,14 +168,23 @@ def version() -> None:
 @app.command()
 def validate(
     path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
+    task: Annotated[
+        Path | None,
+        typer.Option(help="Also validate a TaskSpec and cross-check it against the creature."),
+    ] = None,
 ) -> None:
-    """Validate a creature JSON file against the schema."""
+    """Validate a creature JSON file (and optionally a task) against the schema."""
     creature = _load_spec(path, CreatureSpec)
     console.print(
         f"[green]valid[/green] creature {creature.name!r}: "
         f"{len(creature.parts)} part(s), {len(creature.joints)} joint(s), "
         f"{len(creature.motors)} motor(s)"
     )
+    if task is not None:
+        task_spec = _load_spec(task, TaskSpec)
+        console.print(f"[green]valid[/green] task {task_spec.name!r}")
+        _check_inputs(creature, task_spec)
+        console.print("[green]ok[/green] creature and task are compatible")
 
 
 @app.command()
@@ -129,6 +192,7 @@ def run(
     creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
     task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
     gui: Annotated[bool, typer.Option(help="Open a PyBullet GUI window.")] = False,
+    seed: Annotated[int | None, typer.Option(help="Seed recorded in the trace metadata.")] = None,
     runs_dir: Annotated[
         Path, typer.Option(help="Directory to save the episode trace under.")
     ] = DEFAULT_RUNS_DIR,
@@ -136,9 +200,10 @@ def run(
     """Run a short PyBullet episode, save its trace, and print the final score."""
     creature = _load_spec(creature_path, CreatureSpec)
     task_spec = _load_spec(task, TaskSpec)
+    _check_inputs(creature, task_spec)
 
-    trace = _simulate(creature, task_spec, gui=gui)
-    run_dir = save_run(creature, trace, runs_dir=runs_dir)
+    trace = _simulate(creature, task_spec, gui=gui, seed=seed)
+    run_dir = save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
 
     console.print(
         f"[green]done[/green] {creature.name!r} on {task_spec.name!r}: "
@@ -160,6 +225,7 @@ def demo(
     hold: Annotated[
         bool, typer.Option(help="Keep serving and looping after the run (Ctrl+C to stop).")
     ] = True,
+    seed: Annotated[int | None, typer.Option(help="Seed recorded in the trace metadata.")] = None,
     runs_dir: Annotated[
         Path, typer.Option(help="Directory to save the episode trace under.")
     ] = DEFAULT_RUNS_DIR,
@@ -171,6 +237,7 @@ def demo(
     """
     creature = _load_spec(creature_path, CreatureSpec) if creature_path else default_creature()
     task_spec = _load_spec(task, TaskSpec) if task else default_task()
+    _check_inputs(creature, task_spec)
 
     backend_cls = _require_backend()
     try:
@@ -181,8 +248,11 @@ def demo(
         )
         raise typer.Exit(code=2) from exc
 
+    backend_holder: list = []
+
     def live_frames() -> Iterator[FrameState]:
         backend = backend_cls()
+        backend_holder.append(backend)
         try:
             backend.build(creature, task_spec)
             for step_index in range(task_spec.step_count()):
@@ -198,7 +268,10 @@ def demo(
     frames = stream_frames(creature, live_frames(), task=task_spec, fps=fps, port=port, hold=hold)
 
     if save and frames:
-        run_dir = save_run(creature, _trace_from_frames(creature, task_spec, frames), runs_dir)
+        summary = backend_holder[0].score_summary() if backend_holder else {}
+        meta = _build_meta(creature, task_spec, seed=seed, score_summary=summary)
+        trace = _trace_from_frames(creature, task_spec, frames, meta=meta)
+        run_dir = save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
         console.print(f"[green]saved[/green] {len(frames)} frame(s) -> {run_dir}")
 
 
@@ -215,6 +288,7 @@ def evolve(
     """Hill-climb from a seed creature, keeping the best-scoring mutation."""
     creature = _load_spec(creature_path, CreatureSpec)
     task_spec = _load_spec(task, TaskSpec)
+    _check_inputs(creature, task_spec)
     rng = random.Random(seed)
 
     result = hill_climb(
@@ -224,8 +298,8 @@ def evolve(
         rng=rng,
     )
 
-    best_trace = _simulate(result.best, task_spec)
-    run_dir = save_run(result.best, best_trace, runs_dir=runs_dir)
+    best_trace = _simulate(result.best, task_spec, seed=seed)
+    run_dir = save_run(result.best, best_trace, runs_dir=runs_dir, task=task_spec)
 
     table = Table(title=f"{creature.name!r} lineage ({attempts} attempts, seed {seed})")
     table.add_column("attempt", justify="right")
@@ -267,6 +341,7 @@ def ask(
 
     creature = _load_spec(creature_path, CreatureSpec)
     task_spec = _load_spec(task, TaskSpec)
+    _check_inputs(creature, task_spec)
 
     policy: Policy
     if offline:
@@ -295,8 +370,8 @@ def ask(
         task_name=task_spec.name,
     )
 
-    best_trace = _simulate(result.best, task_spec)
-    run_dir = save_run(result.best, best_trace, runs_dir=runs_dir)
+    best_trace = _simulate(result.best, task_spec, seed=seed)
+    run_dir = save_run(result.best, best_trace, runs_dir=runs_dir, task=task_spec)
     (run_dir / "agent.json").write_text(result.trace.model_dump_json(indent=2))
 
     table = Table(title=f"ask {goal!r} ({attempts} attempts)")
@@ -355,7 +430,7 @@ def view(
     """Replay a saved trace in a Viser browser viewer (renders poses, no physics)."""
     trace = _load_spec(resolve_trace_path(path), EpisodeTrace)
     creature = _load_creature_for_trace(path, creature_path)
-    task_spec = _load_spec(task, TaskSpec) if task is not None else None
+    task_spec = _load_task_for_trace(path, task)
 
     try:
         from creature_lab.viewers.viser_viewer import play_trace

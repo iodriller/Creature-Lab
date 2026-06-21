@@ -77,6 +77,49 @@ def test_build_scene_and_apply_frame_headless():
         server.stop()
 
 
+def test_capsule_and_cylinder_render_as_true_primitives():
+    viser = pytest.importorskip("viser")
+
+    creature = CreatureSpec.model_validate(
+        {
+            "name": "shapes",
+            "parts": [
+                {"id": "torso", "shape": "box", "size": [0.4, 0.2, 0.1], "mass": 1.0},
+                {"id": "cap", "shape": "capsule", "length": 0.3, "radius": 0.04, "mass": 0.2},
+                {"id": "cyl", "shape": "cylinder", "length": 0.3, "radius": 0.05, "mass": 0.2},
+            ],
+            "joints": [
+                {"id": "j1", "parent": "torso", "child": "cap", "type": "fixed"},
+                {"id": "j2", "parent": "torso", "child": "cyl", "type": "fixed"},
+            ],
+        }
+    )
+    frame = FrameState.model_validate(
+        {
+            "t": 0.0,
+            "parts": {
+                "torso": {"position": [0.0, 0.0, 0.0]},
+                "cap": {"position": [0.1, 0.0, 0.0]},
+                "cyl": {"position": [-0.1, 0.0, 0.0]},
+            },
+        }
+    )
+
+    server = viser.ViserServer(port=8131, verbose=False)
+    try:
+        handles = build_scene(server, creature, task=None, max_contacts=1)
+        # Cylinder uses the native primitive; capsule is a true mesh (not a box).
+        assert type(handles.parts["cyl"]).__name__ == "CylinderHandle"
+        assert type(handles.parts["cap"]).__name__ == "GlbHandle"
+        assert type(handles.parts["torso"]).__name__ == "BoxHandle"
+
+        apply_frame(handles, frame)  # still positionable
+        assert tuple(handles.parts["cap"].position) == (0.1, 0.0, 0.0)
+        assert tuple(handles.parts["cyl"].position) == (-0.1, 0.0, 0.0)
+    finally:
+        server.stop()
+
+
 def test_stream_frames_captures_and_returns_frames():
     pytest.importorskip("viser")
 
