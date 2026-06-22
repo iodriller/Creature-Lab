@@ -205,7 +205,13 @@ A second pass that ran the whole pipeline and read every module. Findings:
   `distance_traveled`→`net_displacement`, `forward_distance`→`forward_displacement` (both are net
   centroid displacements) — and `duration` is now the final frame's timestamp (total simulated
   time, e.g. 3.00s) rather than the one-timestep-short frame span; `replay` matches.
+- **D6 ✅ — Robustness of the new diagnostics commands (audit fixes).** `doctor` no longer crashes
+  when a check throws (e.g. a broken PyBullet/headless env): `collect_doctor_checks` runs each
+  check through a `_safe` guard that turns a failure into a `warn` row. `inspect` no longer raw-
+  tracebacks on a missing/incomplete run: it loads only the trace (+ optional `task.json`) via the
+  friendly `_load_spec`/`_load_task_for_trace` helpers (it never used the creature), so a missing
+  path exits 2 and a run dir with only `trace.json` still summarizes.
 
-Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (128 tests,
+Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (131 tests,
 including end-to-end scenarios) all green, and the full CLI loop
 (`doctor → validate → run → inspect → replay → export → evolve → ask → demo`) works.
