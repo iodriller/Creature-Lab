@@ -65,7 +65,6 @@ class PyBulletBackend:
         self._link_index: dict[str, int] = {}
         self._joint_link: dict[str, int] = {}
         self._part_by_link: dict[int, str] = {}
-        self._root_id = ""
         self._plane_id = -1
         self._damaged_parts: set[str] = set()
         self._t = 0.0
@@ -168,28 +167,6 @@ class PyBulletBackend:
         """Per-component breakdown of the most recently read frame's score."""
         return dict(self._last_score_components)
 
-    def set_pose(self, frame: FrameState) -> None:
-        """Kinematically pose the body from a recorded frame, without stepping physics.
-
-        Sets the root part's pose and each hinge joint angle so links follow. Used to
-        replay a saved trace for rendering (no physics is simulated).
-        """
-        if self._creature is None or self._body_id is None:
-            raise RuntimeError("build() must be called before set_pose()")
-        base = frame.parts[self._root_id]
-        w, x, y, z = base.orientation
-        pybullet.resetBasePositionAndOrientation(
-            self._body_id, base.position, (x, y, z, w), physicsClientId=self._client
-        )
-        for joint in self._creature.joints:
-            if joint.type == JointType.HINGE and joint.id in frame.joint_angles:
-                pybullet.resetJointState(
-                    self._body_id,
-                    self._joint_link[joint.id],
-                    frame.joint_angles[joint.id],
-                    physicsClientId=self._client,
-                )
-
     def _build_body(self, creature: CreatureSpec) -> None:
         parts_by_id = {part.id: part for part in creature.parts}
         joints_by_parent: dict[str, list] = {part.id: [] for part in creature.parts}
@@ -199,7 +176,6 @@ class PyBulletBackend:
             joint_by_child[joint.child] = joint
         root_id = next(part.id for part in creature.parts if part.id not in joint_by_child)
         root_part = parts_by_id[root_id]
-        self._root_id = root_id
 
         # Breadth-first traversal assigns each non-root part a 0-based link index
         # matching its position in the link arrays below.
@@ -387,11 +363,13 @@ def render_trace(
     camera_yaw: float = 50.0,
     camera_pitch: float = -30.0,
 ) -> list:
-    """Render a trace to a list of RGB frames by replaying poses (no physics step).
+    """Render a trace to a list of RGB frames (no physics step).
 
-    Builds the creature once, then for each frame re-poses the body from the recorded
-    state and captures an image with PyBullet's headless software renderer. Returns a
-    list of ``(height, width, 3)`` uint8 numpy arrays.
+    Each part is drawn as an independent visual body posed *directly* from the
+    recorded ``frame.parts`` poses — exactly what the Viser viewer shows — so the
+    export is faithful to the trace rather than re-deriving link poses from joint
+    angles (which deviates from the recorded dynamics). Returns a list of
+    ``(height, width, 3)`` uint8 numpy arrays.
     """
     import numpy as np
 
@@ -399,24 +377,44 @@ def render_trace(
     width += width % 2
     height += height % 2
 
-    backend = PyBulletBackend()
+    client = pybullet.connect(pybullet.DIRECT)
     frames: list = []
     try:
-        backend.build(creature, TaskSpec(name="render", duration=1.0))
+        pybullet.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=client)
+        pybullet.loadURDF("plane.urdf", physicsClientId=client)  # visual ground reference
+
+        # One static (mass-0) visual body per part; we just move them each frame.
+        part_bodies: dict[str, int] = {}
+        for part in creature.parts:
+            geom, kwargs = _visual_geometry(part)
+            visual = pybullet.createVisualShape(
+                geom,
+                rgbaColor=[*(part.color or _DEFAULT_COLOR), 1.0],
+                physicsClientId=client,
+                **kwargs,
+            )
+            part_bodies[part.id] = pybullet.createMultiBody(
+                baseMass=0.0, baseVisualShapeIndex=visual, physicsClientId=client
+            )
+
         projection = pybullet.computeProjectionMatrixFOV(
-            fov, width / height, 0.1, 100.0, physicsClientId=backend._client
+            fov, width / height, 0.1, 100.0, physicsClientId=client
         )
         for frame in trace.frames:
-            backend.set_pose(frame)
-            target = frame.parts[backend._root_id].position
+            centroid = [0.0, 0.0, 0.0]
+            for part_id, pose in frame.parts.items():
+                body = part_bodies.get(part_id)
+                if body is None:
+                    continue
+                w, x, y, z = pose.orientation  # schema (w,x,y,z) -> pybullet (x,y,z,w)
+                pybullet.resetBasePositionAndOrientation(
+                    body, pose.position, (x, y, z, w), physicsClientId=client
+                )
+                for axis in range(3):
+                    centroid[axis] += pose.position[axis]
+            centroid = [value / len(frame.parts) for value in centroid]
             view = pybullet.computeViewMatrixFromYawPitchRoll(
-                target,
-                camera_distance,
-                camera_yaw,
-                camera_pitch,
-                0,
-                2,
-                physicsClientId=backend._client,
+                centroid, camera_distance, camera_yaw, camera_pitch, 0, 2, physicsClientId=client
             )
             _, _, rgba, _, _ = pybullet.getCameraImage(
                 width,
@@ -424,10 +422,10 @@ def render_trace(
                 viewMatrix=view,
                 projectionMatrix=projection,
                 renderer=pybullet.ER_TINY_RENDERER,
-                physicsClientId=backend._client,
+                physicsClientId=client,
             )
             rgb = np.reshape(np.asarray(rgba, dtype=np.uint8), (height, width, 4))[:, :, :3]
             frames.append(rgb)
     finally:
-        backend.close()
+        pybullet.disconnect(physicsClientId=client)
     return frames

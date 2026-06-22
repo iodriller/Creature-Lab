@@ -212,6 +212,26 @@ A second pass that ran the whole pipeline and read every module. Findings:
   friendly `_load_spec`/`_load_task_for_trace` helpers (it never used the creature), so a missing
   path exits 2 and a run dir with only `trace.json` still summarizes.
 
-Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (131 tests,
+### Deep dive (empirical edge-case sweep)
+
+Built edge-case creatures and exercised the whole system rather than re-reading. Most paths held
+up — **verified OK**: depth-2+ kinematic trees compose correctly (parent/link indexing, anchor
+chaining) and detect the root regardless of part order; `mutate` and the offline tool policy
+produced 0 invalid creatures / 0 `ToolError`s over 2000 iterations each; aggressive creatures
+(tiny masses, long limbs, big motors, large timesteps) never produced a non-finite score; special
+characters in part ids and contact-pool overflow are non-fatal.
+
+- **DD1 ✅ — `export` was not faithful to the trace.** `render_trace` rebuilt the jointed body and
+  reconstructed poses via forward-kinematics from recorded *joint angles* (`set_pose`), discarding
+  the recorded per-link positions. Position-controlled joints sag/lag under load, so FK ≠ the
+  recorded dynamics: on the example tripod the exported limbs were up to **~5.6 cm** off, and the
+  GIF/MP4 disagreed with the faithful Viser `view`. Fixed: `render_trace` now draws each part as an
+  independent mass-0 visual body posed **directly from `frame.parts`** (exactly what Viser does), so
+  export is faithful and consistent with `view`. This also removed the now-unused `set_pose`
+  method and `_root_id`. (Minor follow-ups noted, not changed: `EpisodeSummary.forward_displacement`
+  is centroid-based while the score's forward term is base-based; the viewer's contact-marker pool
+  caps at 16 — the trace still keeps all contacts.)
+
+Verified clean after the fixes: `ruff check`, `ruff format --check`, and `pytest` (132 tests,
 including end-to-end scenarios) all green, and the full CLI loop
 (`doctor → validate → run → inspect → replay → export → evolve → ask → demo`) works.

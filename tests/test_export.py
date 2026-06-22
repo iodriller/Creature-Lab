@@ -84,3 +84,47 @@ def test_render_trace_produces_rgb_frames():
     # Odd dimensions are rounded up to even so MP4 (libx264) stays valid.
     odd = render_trace(creature, trace, width=65, height=49)
     assert odd[0].shape == (50, 66, 3)
+
+
+def test_render_is_driven_by_recorded_part_poses_not_joint_angles():
+    # Rendering reads frame.parts directly (faithful to the trace), so a creature
+    # with NO joints/motors and a hand-posed trace still renders correctly.
+    pytest.importorskip("pybullet")
+    from creature_lab.backends.pybullet_backend import render_trace
+    from creature_lab.schema import CreatureSpec, EpisodeTrace
+
+    creature = CreatureSpec.model_validate(
+        {
+            "name": "free",
+            "parts": [
+                {"id": "a", "shape": "box", "size": [0.3, 0.3, 0.3], "mass": 1.0},
+                {"id": "b", "shape": "sphere", "radius": 0.15, "mass": 0.5},
+            ],
+            # A fixed joint would rigidly fix b to a under FK; the trace below poses them
+            # independently, so a faithful (parts-driven) render must ignore the joint.
+            "joints": [{"id": "j", "parent": "a", "child": "b", "type": "fixed"}],
+        }
+    )
+    frames = [
+        {
+            "t": t,
+            "parts": {
+                "a": {"position": [t, 0.0, 1.0]},
+                "b": {"position": [t, 0.5, 1.0]},
+            },
+            "score": 0.0,
+        }
+        for t in (0.1, 0.2, 0.3)
+    ]
+    trace = EpisodeTrace(
+        run_id="r2",
+        creature_name="free",
+        task_name="t",
+        backend="pybullet",
+        score=0.0,
+        frames=frames,
+    )
+    images = render_trace(creature, trace, width=64, height=48)
+    assert len(images) == 3
+    assert images[0].shape == (48, 64, 3)
+    assert images[1].any()  # the creature is in view and drawn
