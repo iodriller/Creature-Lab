@@ -21,7 +21,6 @@ from creature_lab.hashing import spec_hash
 from creature_lab.library import default_creature, default_task
 from creature_lab.runs import (
     DEFAULT_RUNS_DIR,
-    load_run,
     new_run_id,
     resolve_trace_path,
     save_run,
@@ -436,7 +435,8 @@ def inspect(
     path: Annotated[Path, typer.Argument(help="Path to a run directory (or trace.json).")],
 ) -> None:
     """Print a detailed diagnostic summary of a saved run."""
-    _, task, trace = load_run(path)
+    trace = _load_spec(resolve_trace_path(path), EpisodeTrace)
+    task = _load_task_for_trace(path, None)
     summary = summarize_episode(trace, task)
     meta = trace.meta
 
