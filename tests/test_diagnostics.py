@@ -1,5 +1,6 @@
 """Tests for environment checks and episode summaries."""
 
+import creature_lab.diagnostics as diagnostics
 from creature_lab.diagnostics import collect_doctor_checks, summarize_episode
 from creature_lab.schema import EpisodeTrace, TaskSpec
 
@@ -103,3 +104,15 @@ def test_doctor_viz_check_reports_trimesh_and_numpy():
     assert viz.status in {"ok", "warn", "missing"}
     if viz.status == "ok":
         assert "trimesh" in viz.detail and "numpy" in viz.detail
+
+
+def test_doctor_never_crashes_when_a_check_raises(monkeypatch):
+    def boom() -> diagnostics.DoctorCheck:
+        raise RuntimeError("simulated broken environment")
+
+    monkeypatch.setattr(diagnostics, "_examples_check", boom)
+    checks = {check.name: check for check in collect_doctor_checks()}  # must not raise
+    assert checks["examples run"].status == "warn"
+    assert "simulated broken environment" in checks["examples run"].detail
+    # Other checks are unaffected.
+    assert checks["platform"].status == "info"

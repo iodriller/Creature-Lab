@@ -12,6 +12,7 @@ import math
 import os
 import platform
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from creature_lab.schema import EpisodeSummary, EpisodeTrace, TaskSpec
@@ -39,26 +40,40 @@ def _installed(module: str) -> bool:
 
 
 def collect_doctor_checks() -> list[DoctorCheck]:
-    """Inspect the environment: platform, optional extras, and an example run."""
-    checks = [
+    """Inspect the environment: platform, optional extras, and an example run.
+
+    Diagnostics must never crash, so every check is guarded — a failing check
+    becomes a `warn` row rather than propagating an exception.
+    """
+    return [
         DoctorCheck(
             "platform",
             "info",
             f"Python {platform.python_version()} on {platform.platform()}",
         ),
-        _extra_check("sim (pybullet)", "pybullet", "uv sync --extra sim"),
-        _viz_check(),
-        _export_check(),
-        _llm_check(),
-        _examples_check(),
+        _safe("sim (pybullet)", _sim_check),
+        _safe("viz (viser)", _viz_check),
+        _safe("export (imageio)", _export_check),
+        _safe("llm (litellm)", _llm_check),
+        _safe("examples run", _examples_check),
     ]
-    return checks
+
+
+def _safe(name: str, check: Callable[[], DoctorCheck]) -> DoctorCheck:
+    try:
+        return check()
+    except Exception as exc:  # a diagnostic must report failures, not raise them
+        return DoctorCheck(name, "warn", f"check failed: {exc}")
 
 
 def _extra_check(name: str, module: str, hint: str) -> DoctorCheck:
     if _installed(module):
         return DoctorCheck(name, "ok", f"{module} importable")
     return DoctorCheck(name, "missing", f"not installed — `{hint}`")
+
+
+def _sim_check() -> DoctorCheck:
+    return _extra_check("sim (pybullet)", "pybullet", "uv sync --extra sim")
 
 
 def _viz_check() -> DoctorCheck:

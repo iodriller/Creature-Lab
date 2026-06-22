@@ -44,6 +44,30 @@ def test_inspect_reports_summary(tmp_path):
     assert "sha256:" in result.stdout
 
 
+def test_inspect_missing_path_exits_cleanly():
+    result = runner.invoke(app, ["inspect", "does/not/exist"])
+    assert result.exit_code == 2  # friendly file-not-found, not a raw traceback
+
+
+def test_inspect_without_creature_json_still_summarizes(tmp_path):
+    # A run dir / trace.json without a sibling creature.json must not crash inspect.
+    trace = {
+        "run_id": "r1",
+        "creature_name": "c",
+        "task_name": "t",
+        "backend": "pybullet",
+        "score": 0.5,
+        "frames": [
+            {"t": 0.1, "parts": {"a": {"position": [0, 0, 0]}}, "score": 0.0},
+            {"t": 0.2, "parts": {"a": {"position": [1, 0, 0]}}, "score": 0.5},
+        ],
+    }
+    (tmp_path / "trace.json").write_text(json.dumps(trace))
+    result = runner.invoke(app, ["inspect", str(tmp_path)])
+    assert result.exit_code == 0, result.stdout
+    assert "final score" in result.stdout
+
+
 def test_validate_example_creature():
     result = runner.invoke(app, ["validate", str(EXAMPLE)])
     assert result.exit_code == 0, result.stdout
