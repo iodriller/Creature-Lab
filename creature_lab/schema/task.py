@@ -48,6 +48,23 @@ class DamageEventSpec(StrictModel):
         return value
 
 
+class ImpulseEventSpec(StrictModel):
+    """A one-step external push applied to a part — used for push-recovery tasks."""
+
+    time: float = Field(gt=0)
+    part_id: str = Field(min_length=1)
+    #: World-frame force (N) applied for a single timestep at the part's centre.
+    force: Vector3
+
+    @field_validator("part_id")
+    @classmethod
+    def clean_part_id(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("impulse event part_id must not be blank")
+        return value
+
+
 class TaskSpec(StrictModel):
     name: str = Field(min_length=1)
     duration: float = Field(gt=0)
@@ -56,6 +73,7 @@ class TaskSpec(StrictModel):
     target: TargetSpec | None = None
     reward: RewardSpec = Field(default_factory=RewardSpec)
     damage_event: DamageEventSpec | None = None
+    impulse_event: ImpulseEventSpec | None = None
 
     @field_validator("name")
     @classmethod
@@ -71,6 +89,8 @@ class TaskSpec(StrictModel):
             raise ValueError("task timestep must not exceed duration")
         if self.damage_event is not None and self.damage_event.time >= self.duration:
             raise ValueError("damage event time must be before task duration")
+        if self.impulse_event is not None and self.impulse_event.time >= self.duration:
+            raise ValueError("impulse event time must be before task duration")
         if self.target is None and self.reward.target_distance != 0.0:
             raise ValueError("reward.target_distance requires a task target")
         return self

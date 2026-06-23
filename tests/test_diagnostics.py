@@ -9,7 +9,7 @@ def test_doctor_checks_cover_platform_and_extras():
     checks = {check.name: check for check in collect_doctor_checks()}
     assert "platform" in checks
     assert checks["platform"].status == "info"
-    for name in ("sim (pybullet)", "viz (viser)", "export (imageio)", "llm (litellm)"):
+    for name in ("sim (pybullet)", "mujoco", "viz (viser)", "export (imageio)", "llm (litellm)"):
         assert name in checks
         assert checks[name].status in {"ok", "missing", "warn", "info"}
     assert "examples run" in checks

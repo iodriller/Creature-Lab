@@ -1,0 +1,14 @@
+{
+  "creature": "damaged_quadruped",
+  "task": "recover",
+  "backend": "pybullet api 202010061",
+  "best_score": 0.5192,
+  "score_summary": {
+    "forward": 0.5192,
+    "target": 0.0,
+    "energy": -0.0,
+    "fall": 0.0,
+    "total": 0.5192
+  },
+  "note": "open-loop sinusoid controller baseline"
+}
