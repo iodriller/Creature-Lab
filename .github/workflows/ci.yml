@@ -18,7 +18,9 @@ jobs:
         # All test-exercised extras. The `llm` extra (litellm) is intentionally
         # excluded: the online `ask` path needs an API key and is not run in CI,
         # while the offline agent path and the LLM response parser need no provider.
-        run: uv sync --extra dev --extra sim --extra viz --extra export
+        run: >
+          uv sync --extra dev --extra sim --extra viz --extra export
+          --extra evolve --extra mujoco
       - name: Ruff check
         run: uv run ruff check .
       - name: Ruff format check

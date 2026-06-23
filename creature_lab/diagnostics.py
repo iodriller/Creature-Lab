@@ -52,6 +52,7 @@ def collect_doctor_checks() -> list[DoctorCheck]:
             f"Python {platform.python_version()} on {platform.platform()}",
         ),
         _safe("sim (pybullet)", _sim_check),
+        _safe("mujoco", _mujoco_check),
         _safe("viz (viser)", _viz_check),
         _safe("export (imageio)", _export_check),
         _safe("llm (litellm)", _llm_check),
@@ -74,6 +75,12 @@ def _extra_check(name: str, module: str, hint: str) -> DoctorCheck:
 
 def _sim_check() -> DoctorCheck:
     return _extra_check("sim (pybullet)", "pybullet", "uv sync --extra sim")
+
+
+def _mujoco_check() -> DoctorCheck:
+    if _installed("mujoco"):
+        return DoctorCheck("mujoco", "ok", "mujoco importable (run --backend mujoco)")
+    return DoctorCheck("mujoco", "info", "not installed — `uv sync --extra mujoco` (optional)")
 
 
 def _viz_check() -> DoctorCheck:

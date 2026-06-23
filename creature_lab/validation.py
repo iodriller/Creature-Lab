@@ -30,6 +30,11 @@ def validate_episode_inputs(creature: CreatureSpec, task: TaskSpec) -> list[str]
             f"task damages unknown part {task.damage_event.part_id!r} "
             f"(creature parts: {sorted(part_ids)})"
         )
+    if task.impulse_event is not None and task.impulse_event.part_id not in part_ids:
+        raise EpisodeInputError(
+            f"task pushes unknown part {task.impulse_event.part_id!r} "
+            f"(creature parts: {sorted(part_ids)})"
+        )
 
     # --- soft warnings ---
     warnings: list[str] = []
@@ -38,9 +43,11 @@ def validate_episode_inputs(creature: CreatureSpec, task: TaskSpec) -> list[str]
         warnings.append("task has a target but reward.target_distance is 0 (target unused)")
 
     reward = task.reward
-    if (reward.forward_distance, reward.target_distance) == (0.0, 0.0):
+    # forward/target are "go" objectives; fall_penalty is a "stay upright" objective
+    # (balance/push-recovery tasks), so it counts too.
+    if (reward.forward_distance, reward.target_distance, reward.fall_penalty) == (0.0, 0.0, 0.0):
         warnings.append(
-            "reward has no positive objective (forward_distance and target_distance are 0)"
+            "reward has no objective (forward_distance, target_distance, fall_penalty all 0)"
         )
 
     if task.step_count() > _MAX_REASONABLE_STEPS:

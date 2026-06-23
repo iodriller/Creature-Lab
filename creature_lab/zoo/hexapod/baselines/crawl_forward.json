@@ -1,0 +1,14 @@
+{
+  "creature": "hexapod",
+  "task": "crawl_forward",
+  "backend": "pybullet api 202010061",
+  "best_score": 0.5384,
+  "score_summary": {
+    "forward": 0.5384,
+    "target": 0.0,
+    "energy": -0.0,
+    "fall": 0.0,
+    "total": 0.5384
+  },
+  "note": "open-loop sinusoid controller baseline"
+}

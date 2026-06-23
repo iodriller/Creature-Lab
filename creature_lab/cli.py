@@ -7,6 +7,7 @@ import random
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Annotated, TypeVar
+from xml.etree.ElementTree import ParseError as ET_PARSE_ERROR
 
 import typer
 from pydantic import BaseModel, ValidationError
@@ -16,9 +17,21 @@ from rich.table import Table
 from creature_lab import VERSION
 from creature_lab.controllers.sinusoid import sinusoid_targets
 from creature_lab.diagnostics import collect_doctor_checks, summarize_episode
-from creature_lab.evolve import hill_climb
+from creature_lab.evolve import (
+    Evaluation,
+    cmaes,
+    genetic,
+    hill_climb,
+    make_mutator,
+    map_elites,
+)
 from creature_lab.hashing import spec_hash
-from creature_lab.library import default_creature, default_task
+from creature_lab.library import (
+    builtin_creature_names,
+    creature_by_name,
+    default_creature,
+    default_task,
+)
 from creature_lab.runs import (
     DEFAULT_RUNS_DIR,
     new_run_id,
@@ -84,16 +97,30 @@ def _check_inputs(creature: CreatureSpec, task: TaskSpec) -> None:
         console.print(f"[yellow]warning:[/yellow] {warning}")
 
 
-def _require_backend() -> type:
-    """Import the PyBullet backend, exiting with a friendly message if it is missing."""
-    try:
-        from creature_lab.backends.pybullet_backend import PyBulletBackend
-    except ImportError as exc:
-        console.print(
-            "[red]error:[/red] pybullet is not installed. Install it with `uv sync --extra sim`."
-        )
-        raise typer.Exit(code=2) from exc
-    return PyBulletBackend
+def _require_backend(name: str = "pybullet") -> tuple[type, str]:
+    """Resolve a backend class + version string by name, exiting if it is missing."""
+    if name == "pybullet":
+        try:
+            from creature_lab.backends.pybullet_backend import PyBulletBackend, backend_version
+        except ImportError as exc:
+            console.print(
+                "[red]error:[/red] pybullet is not installed. Install it with "
+                "`uv sync --extra sim`."
+            )
+            raise typer.Exit(code=2) from exc
+        return PyBulletBackend, backend_version()
+    if name == "mujoco":
+        try:
+            from creature_lab.backends.mujoco_backend import MuJoCoBackend, backend_version
+        except ImportError as exc:
+            console.print(
+                "[red]error:[/red] mujoco is not installed. Install it with "
+                "`uv sync --extra mujoco`."
+            )
+            raise typer.Exit(code=2) from exc
+        return MuJoCoBackend, backend_version()
+    console.print(f"[red]error:[/red] unknown backend {name!r} (choose: pybullet, mujoco)")
+    raise typer.Exit(code=2)
 
 
 def _build_meta(
@@ -102,14 +129,13 @@ def _build_meta(
     *,
     seed: int | None,
     score_summary: dict[str, float],
+    backend_version: str,
 ) -> TraceMeta:
     """Build the provenance/reproducibility metadata stamped into a trace."""
-    from creature_lab.backends.pybullet_backend import backend_version
-
     return TraceMeta(
         schema_version=TRACE_SCHEMA_VERSION,
         lab_version=VERSION,
-        backend_version=backend_version(),
+        backend_version=backend_version,
         timestep=task.timestep,
         seed=seed,
         creature_hash=spec_hash(creature),
@@ -125,40 +151,64 @@ def _trace_from_frames(
     frames: list[FrameState],
     *,
     meta: TraceMeta,
+    backend: str = "pybullet",
 ) -> EpisodeTrace:
     return EpisodeTrace(
         run_id=new_run_id(),
         creature_name=creature.name,
         task_name=task.name,
-        backend="pybullet",
+        backend=backend,
         score=frames[-1].score,
         frames=frames,
         meta=meta,
     )
 
 
+def _make_controller(name: str, creature: CreatureSpec):
+    """Build an open-loop controller callable ``(t, prev_frame) -> targets`` by name."""
+    if name == "sinusoid":
+        return lambda t, prev=None: sinusoid_targets(creature, t)
+    if name == "cpg":
+        from creature_lab.controllers.cpg import CPGController
+
+        return CPGController(creature)
+    raise typer.BadParameter(f"unknown controller {name!r} (choose: sinusoid, cpg)")
+
+
 def _simulate(
-    creature: CreatureSpec, task: TaskSpec, *, gui: bool = False, seed: int | None = None
+    creature: CreatureSpec,
+    task: TaskSpec,
+    *,
+    gui: bool = False,
+    seed: int | None = None,
+    controller: str = "sinusoid",
+    backend: str = "pybullet",
 ) -> EpisodeTrace:
-    """Run one PyBullet episode and return its trace (without saving)."""
-    backend = _require_backend()(gui=gui)
+    """Run one physics episode on the named backend and return its trace (unsaved)."""
+    policy = _make_controller(controller, creature)
+    backend_cls, version = _require_backend(backend)
+    sim = backend_cls(gui=gui)
     try:
-        backend.build(creature, task)
+        sim.build(creature, task)
         frames: list[FrameState] = []
+        prev: FrameState | None = None
         for step_index in range(task.step_count()):
             t = step_index * task.timestep
-            backend.apply_motor_targets(sinusoid_targets(creature, t))
-            frames.append(backend.step(task.timestep))
-        score_summary = backend.score_summary()
+            sim.apply_motor_targets(policy(t, prev))
+            prev = sim.step(task.timestep)
+            frames.append(prev)
+        score_summary = sim.score_summary()
     finally:
-        backend.close()
+        sim.close()
 
     if not frames:
         console.print("[yellow]warning:[/yellow] task duration too short to run any steps")
         raise typer.Exit(code=1)
 
-    meta = _build_meta(creature, task, seed=seed, score_summary=score_summary)
-    return _trace_from_frames(creature, task, frames, meta=meta)
+    meta = _build_meta(
+        creature, task, seed=seed, score_summary=score_summary, backend_version=version
+    )
+    return _trace_from_frames(creature, task, frames, meta=meta, backend=backend)
 
 
 @app.command()
@@ -209,18 +259,26 @@ def validate(
 def run(
     creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
     task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
+    controller: Annotated[
+        str, typer.Option(help="Open-loop controller: 'sinusoid' or 'cpg'.")
+    ] = "sinusoid",
+    backend: Annotated[
+        str, typer.Option(help="Physics backend: 'pybullet' or 'mujoco'.")
+    ] = "pybullet",
     gui: Annotated[bool, typer.Option(help="Open a PyBullet GUI window.")] = False,
     seed: Annotated[int | None, typer.Option(help="Seed recorded in the trace metadata.")] = None,
     runs_dir: Annotated[
         Path, typer.Option(help="Directory to save the episode trace under.")
     ] = DEFAULT_RUNS_DIR,
 ) -> None:
-    """Run a short PyBullet episode, save its trace, and print the final score."""
+    """Run a short physics episode, save its trace, and print the final score."""
     creature = _load_spec(creature_path, CreatureSpec)
     task_spec = _load_spec(task, TaskSpec)
     _check_inputs(creature, task_spec)
 
-    trace = _simulate(creature, task_spec, gui=gui, seed=seed)
+    trace = _simulate(
+        creature, task_spec, gui=gui, seed=seed, controller=controller, backend=backend
+    )
     run_dir = save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
 
     console.print(
@@ -232,7 +290,14 @@ def run(
 @app.command()
 def demo(
     creature_path: Annotated[
-        Path | None, typer.Argument(help="CreatureSpec JSON (default: built-in tripod).")
+        Path | None, typer.Argument(help="CreatureSpec JSON (overrides --creature).")
+    ] = None,
+    creature_name: Annotated[
+        str | None,
+        typer.Option(
+            "--creature",
+            help="Built-in creature to demo (quadruped, worm, tripod). Default: quadruped.",
+        ),
     ] = None,
     task: Annotated[
         Path | None, typer.Option(help="TaskSpec JSON (default: built-in crawl_forward).")
@@ -250,14 +315,28 @@ def demo(
 ) -> None:
     """Simulate a creature and stream its motion live to a Viser browser viewer.
 
-    With no arguments it uses the built-in tripod and crawl-forward task, so it
+    With no arguments it uses the built-in quadruped and crawl-forward task, so it
     works from an installed package without the repository's examples/ directory.
+    Use ``--creature worm`` (or ``tripod``) to pick a different built-in, or pass a
+    CreatureSpec JSON path to load your own.
     """
-    creature = _load_spec(creature_path, CreatureSpec) if creature_path else default_creature()
+    if creature_path:
+        creature = _load_spec(creature_path, CreatureSpec)
+    elif creature_name:
+        try:
+            creature = creature_by_name(creature_name)
+        except KeyError as exc:
+            available = ", ".join(builtin_creature_names())
+            console.print(
+                f"[red]error:[/red] unknown creature {creature_name!r}; choose one of: {available}"
+            )
+            raise typer.Exit(code=2) from exc
+    else:
+        creature = default_creature()
     task_spec = _load_spec(task, TaskSpec) if task else default_task()
     _check_inputs(creature, task_spec)
 
-    backend_cls = _require_backend()
+    backend_cls, version = _require_backend()
     try:
         from creature_lab.viewers.viser_viewer import stream_frames
     except ImportError as exc:
@@ -287,39 +366,116 @@ def demo(
 
     if save and frames:
         summary = backend_holder[0].score_summary() if backend_holder else {}
-        meta = _build_meta(creature, task_spec, seed=seed, score_summary=summary)
+        meta = _build_meta(
+            creature, task_spec, seed=seed, score_summary=summary, backend_version=version
+        )
         trace = _trace_from_frames(creature, task_spec, frames, meta=meta)
         run_dir = save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
         console.print(f"[green]saved[/green] {len(frames)} frame(s) -> {run_dir}")
+
+
+def _gait_symmetry(trace: EpisodeTrace) -> float:
+    """Right-side share of ground contacts in [0, 1] (0.5 = symmetric / no l/r parts)."""
+    left = right = 0
+    for frame in trace.frames:
+        for part_id in {c.part_id for c in frame.contacts}:
+            if part_id.endswith("_l"):
+                left += 1
+            elif part_id.endswith("_r"):
+                right += 1
+    total = left + right
+    return 0.5 if total == 0 else right / total
+
+
+def _feature_evaluate(creature: CreatureSpec, task: TaskSpec) -> Evaluation:
+    """Evaluate a creature, returning its score plus a (forward, symmetry) descriptor."""
+    trace = _simulate(creature, task)
+    summary = summarize_episode(trace, task)
+    return Evaluation(trace.score, (summary.forward_displacement, _gait_symmetry(trace)))
 
 
 @app.command()
 def evolve(
     creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
     task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
-    attempts: Annotated[int, typer.Option(help="Number of mutation attempts.")] = 10,
-    seed: Annotated[int, typer.Option(help="Random seed for reproducible mutations.")] = 0,
+    strategy: Annotated[
+        str, typer.Option(help="hill_climb, genetic, map_elites, or cmaes.")
+    ] = "hill_climb",
+    mutate_opt: Annotated[
+        str, typer.Option("--mutate", help="What to mutate: body, controller, or body,controller.")
+    ] = "body,controller",
+    attempts: Annotated[int, typer.Option(help="Number of candidate evaluations.")] = 10,
+    seed: Annotated[int, typer.Option(help="Random seed for reproducible evolution.")] = 0,
     runs_dir: Annotated[
         Path, typer.Option(help="Directory to save the best creature and trace under.")
     ] = DEFAULT_RUNS_DIR,
 ) -> None:
-    """Hill-climb from a seed creature, keeping the best-scoring mutation."""
+    """Evolve a creature from a seed, saving the best one, a lineage, and any archive."""
     creature = _load_spec(creature_path, CreatureSpec)
     task_spec = _load_spec(task, TaskSpec)
     _check_inputs(creature, task_spec)
     rng = random.Random(seed)
 
-    result = hill_climb(
-        creature,
-        lambda candidate: _simulate(candidate, task_spec).score,
-        attempts=attempts,
-        rng=rng,
-    )
+    if strategy not in {"hill_climb", "genetic", "map_elites", "cmaes"}:
+        console.print(
+            "[red]error:[/red] --strategy must be hill_climb, genetic, map_elites, or cmaes"
+        )
+        raise typer.Exit(code=2)
+
+    targets = {part.strip() for part in mutate_opt.split(",") if part.strip()}
+    if not targets <= {"body", "controller"}:
+        console.print("[red]error:[/red] --mutate must be 'body', 'controller', or both")
+        raise typer.Exit(code=2)
+    mutate_fn = make_mutator("body" in targets, "controller" in targets)
+
+    def evaluate(candidate: CreatureSpec) -> float:
+        return _simulate(candidate, task_spec).score
+
+    try:
+        if strategy == "hill_climb":
+            result = hill_climb(creature, evaluate, attempts=attempts, rng=rng, mutate_fn=mutate_fn)
+        elif strategy == "genetic":
+            result = genetic(creature, evaluate, attempts=attempts, rng=rng, mutate_fn=mutate_fn)
+        elif strategy == "map_elites":
+            result = map_elites(
+                creature,
+                lambda c: _feature_evaluate(c, task_spec),
+                attempts=attempts,
+                rng=rng,
+                mutate_fn=mutate_fn,
+            )
+        else:  # cmaes
+            result = cmaes(creature, evaluate, attempts=attempts, rng=rng)
+    except (RuntimeError, ValueError) as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
 
     best_trace = _simulate(result.best, task_spec, seed=seed)
     run_dir = save_run(result.best, best_trace, runs_dir=runs_dir, task=task_spec)
 
-    table = Table(title=f"{creature.name!r} lineage ({attempts} attempts, seed {seed})")
+    # Persist the lineage (and MAP-Elites archive) so `lineage` can render them later.
+    lineage = [
+        {
+            "index": a.index,
+            "parent": a.parent,
+            "generation": a.generation,
+            "score": a.score,
+            "accepted": a.accepted,
+            "cell": list(a.cell) if a.cell is not None else None,
+        }
+        for a in result.history
+    ]
+    (run_dir / "lineage.json").write_text(
+        json.dumps({"strategy": strategy, "nodes": lineage}, indent=2)
+    )
+    if result.archive:
+        archive = {
+            f"{cell[0]},{cell[1]}": {"score": entry["score"], "features": list(entry["features"])}
+            for cell, entry in result.archive.items()
+        }
+        (run_dir / "archive.json").write_text(json.dumps(archive, indent=2))
+
+    table = Table(title=f"{creature.name!r} evolve ({strategy}, {attempts} attempts, seed {seed})")
     table.add_column("attempt", justify="right")
     table.add_column("score", justify="right")
     table.add_column("result")
@@ -328,11 +484,56 @@ def evolve(
         style = "green" if attempt.accepted else "dim"
         table.add_row(str(attempt.index), f"{attempt.score:.4f}", f"[{style}]{label}[/{style}]")
     console.print(table)
-
+    if result.archive:
+        console.print(f"[cyan]archive[/cyan]: {len(result.archive)} behaviour cell(s) filled")
     console.print(
         f"[green]best[/green] score={result.best_score:.4f} "
         f"(seed score={result.history[0].score:.4f}) -> {run_dir}"
     )
+
+
+@app.command()
+def lineage(
+    path: Annotated[
+        Path, typer.Argument(help="Path to an evolve run directory (or lineage.json).")
+    ],
+    best: Annotated[
+        int | None, typer.Option(help="Instead of the tree, list the top-N scoring candidates.")
+    ] = None,
+) -> None:
+    """Print the ancestral lineage of an evolve run as a tree (or its top candidates)."""
+    lineage_path = path / "lineage.json" if path.is_dir() else path
+    if not lineage_path.exists():
+        console.print(f"[red]error:[/red] no lineage.json at {lineage_path}")
+        raise typer.Exit(code=2)
+    data = json.loads(lineage_path.read_text())
+    nodes = data["nodes"]
+
+    if best is not None:
+        ranked = sorted(nodes, key=lambda n: n["score"], reverse=True)[: max(0, best)]
+        table = Table(title=f"top {best} candidates ({data.get('strategy', '?')})")
+        table.add_column("rank", justify="right")
+        table.add_column("attempt", justify="right")
+        table.add_column("score", justify="right")
+        for rank, node in enumerate(ranked, start=1):
+            table.add_row(str(rank), str(node["index"]), f"{node['score']:.4f}")
+        console.print(table)
+        return
+
+    children: dict[int | None, list[dict]] = {}
+    for node in nodes:
+        children.setdefault(node["parent"], []).append(node)
+
+    console.print(f"[bold]lineage[/bold] ({data.get('strategy', '?')}) - {len(nodes)} candidate(s)")
+
+    def render(parent: int | None, depth: int) -> None:
+        for node in sorted(children.get(parent, []), key=lambda n: n["index"]):
+            mark = "[green]*[/green]" if node["accepted"] else " "
+            indent = "  " * depth
+            console.print(f"{indent}{mark} #{node['index']} score={node['score']:.4f}")
+            render(node["index"], depth + 1)
+
+    render(None, 0)
 
 
 @app.command()
@@ -479,6 +680,53 @@ def inspect(
 
 
 @app.command()
+def diagnose(
+    path: Annotated[Path, typer.Argument(help="Path to a run directory (or trace.json).")],
+    creature_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--creature", help="CreatureSpec JSON (defaults to creature.json in the run dir)."
+        ),
+    ] = None,
+    task: Annotated[
+        Path | None, typer.Option(help="TaskSpec JSON (defaults to task.json in the run dir).")
+    ] = None,
+) -> None:
+    """Explain *why* a creature failed: locomotion signals + matched failure patterns."""
+    from creature_lab.diagnosis import diagnose as run_diagnosis
+
+    trace = _load_spec(resolve_trace_path(path), EpisodeTrace)
+    creature = _load_creature_for_trace(path, creature_path)
+    task_spec = _load_task_for_trace(path, task)
+    result = run_diagnosis(trace, creature, task_spec)
+
+    table = Table(title=f"diagnosis: {trace.run_id!r} ({trace.creature_name!r})")
+    table.add_column("signal")
+    table.add_column("value", justify="right")
+    m = result.metrics
+    table.add_row("forward displacement (m)", f"{m['forward_displacement']:+.3f}")
+    table.add_row("lateral displacement (m)", f"{m['lateral_displacement']:.3f}")
+    table.add_row("net horizontal travel (m)", f"{m['net_displacement']:.3f}")
+    table.add_row("total joint motion (rad)", f"{m['total_joint_motion']:.1f}")
+    fall = m["fall_time"]
+    table.add_row("fall", "no" if fall < 0 else f"yes at t={fall:.2f}s")
+    table.add_row("CoM height std (m)", f"{m['com_height_std']:.3f}")
+    table.add_row("frames in ground contact", f"{m['contact_frames_fraction']:.0%}")
+    console.print(table)
+
+    if not result.patterns:
+        console.print("[green]no failure patterns detected[/green] - this run looks healthy.")
+        return
+
+    console.print("\n[bold]Root-cause patterns detected:[/bold]")
+    for pattern, explanation in zip(result.patterns, result.explanations, strict=True):
+        console.print(f"  [yellow]! {pattern}[/yellow] - {explanation}")
+    console.print("\n[bold]Suggested edits:[/bold]")
+    for index, suggestion in enumerate(result.suggestions, start=1):
+        console.print(f"  {index}. {suggestion}")
+
+
+@app.command()
 def view(
     path: Annotated[Path, typer.Argument(help="Path to a trace.json file or run directory.")],
     creature_path: Annotated[
@@ -492,6 +740,7 @@ def view(
     ] = None,
     fps: Annotated[float, typer.Option(help="Playback frames per second.")] = 30.0,
     port: Annotated[int, typer.Option(help="Port for the Viser server.")] = 8080,
+    debug: Annotated[bool, typer.Option(help="Overlay CoM/root trails and a fall marker.")] = False,
 ) -> None:
     """Replay a saved trace in a Viser browser viewer (renders poses, no physics)."""
     trace = _load_spec(resolve_trace_path(path), EpisodeTrace)
@@ -509,7 +758,77 @@ def view(
     console.print(
         f"[green]serving[/green] {trace.run_id!r} on http://localhost:{port} (Ctrl+C to stop)"
     )
-    play_trace(creature, trace, task=task_spec, fps=fps, port=port)
+    play_trace(creature, trace, task=task_spec, fps=fps, port=port, debug=debug)
+
+
+@app.command()
+def compare(
+    run_a: Annotated[Path, typer.Argument(help="First run directory (or trace.json).")],
+    run_b: Annotated[Path, typer.Argument(help="Second run directory (or trace.json).")],
+    gap: Annotated[float, typer.Option(help="Sideways spacing between the two creatures.")] = 1.0,
+    fps: Annotated[float, typer.Option(help="Playback frames per second.")] = 30.0,
+    port: Annotated[int, typer.Option(help="Port for the Viser server.")] = 8080,
+) -> None:
+    """Replay two saved runs side by side in one Viser scene."""
+    trace_a = _load_spec(resolve_trace_path(run_a), EpisodeTrace)
+    trace_b = _load_spec(resolve_trace_path(run_b), EpisodeTrace)
+    creature_a = _load_creature_for_trace(run_a, None)
+    creature_b = _load_creature_for_trace(run_b, None)
+
+    try:
+        from creature_lab.viewers.viser_viewer import compare_traces
+    except ImportError as exc:
+        console.print(
+            "[red]error:[/red] viser is not installed. Install it with `uv sync --extra viz`."
+        )
+        raise typer.Exit(code=2) from exc
+
+    console.print(
+        f"[green]serving[/green] {trace_a.run_id!r} vs {trace_b.run_id!r} "
+        f"on http://localhost:{port} (Ctrl+C to stop)"
+    )
+    compare_traces(
+        creature_a,
+        trace_a,
+        creature_b,
+        trace_b,
+        task_a=_load_task_for_trace(run_a, None),
+        task_b=_load_task_for_trace(run_b, None),
+        gap=gap,
+        fps=fps,
+        port=port,
+    )
+
+
+@app.command()
+def plot(
+    path: Annotated[Path, typer.Argument(help="Path to a run directory (or trace.json).")],
+    metric: Annotated[
+        str, typer.Option(help="Metric: joint_energy, score, com_height, forward_x.")
+    ] = "joint_energy",
+    out: Annotated[
+        Path | None, typer.Option("--out", "-o", help="Save a PNG here (else open a window).")
+    ] = None,
+) -> None:
+    """Plot a per-frame metric for a saved run."""
+    trace = _load_spec(resolve_trace_path(path), EpisodeTrace)
+    creature = _load_creature_for_trace(path, None)
+
+    try:
+        from creature_lab.viewers.plotting import plot_metric
+    except ImportError as exc:
+        console.print(
+            "[red]error:[/red] matplotlib is not installed. Install it with `uv sync --extra viz`."
+        )
+        raise typer.Exit(code=2) from exc
+
+    try:
+        result = plot_metric(creature, trace, metric, out=out)
+    except ValueError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    if result is not None:
+        console.print(f"[green]saved[/green] {metric} plot -> {result}")
 
 
 @app.command()
@@ -549,6 +868,204 @@ def export(
     frames = render_trace(creature, trace, width=width, height=height)
     out_path = write_animation(frames, out, fps=fps)
     console.print(f"[green]exported[/green] {len(frames)} frame(s) -> {out_path}")
+
+
+def _write_creature(creature: CreatureSpec, out: Path) -> None:
+    """Serialize a creature to JSON and report part/joint/motor counts."""
+    out.write_text(creature.model_dump_json(indent=2, exclude_none=True))
+    console.print(
+        f"[green]wrote[/green] {creature.name!r} -> {out} "
+        f"({len(creature.parts)} part(s), {len(creature.joints)} joint(s), "
+        f"{len(creature.motors)} motor(s))"
+    )
+
+
+scaffold_app = typer.Typer(help="Generate creatures procedurally (no URDF/MJCF by hand).")
+app.add_typer(scaffold_app, name="scaffold")
+
+
+@scaffold_app.command("worm")
+def scaffold_worm(
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output CreatureSpec path.")],
+    segments: Annotated[int, typer.Option(help="Number of body segments.")] = 5,
+) -> None:
+    """Scaffold a multi-segment worm that crawls forward."""
+    from creature_lab.scaffold import generate_worm
+
+    _write_creature(generate_worm(segments), out)
+
+
+@scaffold_app.command("quadruped")
+def scaffold_quadruped(
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output CreatureSpec path.")],
+    leg_length: Annotated[float, typer.Option(help="Leg capsule length (m).")] = 0.22,
+) -> None:
+    """Scaffold a four-legged walker."""
+    from creature_lab.scaffold import generate_quadruped
+
+    _write_creature(generate_quadruped(leg_length=leg_length), out)
+
+
+@scaffold_app.command("hexapod")
+def scaffold_hexapod(
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output CreatureSpec path.")],
+) -> None:
+    """Scaffold a six-legged walker."""
+    from creature_lab.scaffold import generate_hexapod
+
+    _write_creature(generate_hexapod(), out)
+
+
+@scaffold_app.command("humanoid")
+def scaffold_humanoid(
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output CreatureSpec path.")],
+    dof: Annotated[int, typer.Option(help="Actuated hinges: 8 or 12.")] = 8,
+    height: Annotated[float, typer.Option(help="Approximate standing height (m).")] = 1.6,
+) -> None:
+    """Scaffold a bipedal humanoid skeleton."""
+    from creature_lab.scaffold import generate_humanoid
+
+    if dof not in (8, 12):
+        console.print("[red]error:[/red] --dof must be 8 or 12")
+        raise typer.Exit(code=2)
+    _write_creature(generate_humanoid(height=height, dof=dof), out)  # type: ignore[arg-type]
+
+
+@app.command("mirror-limb")
+def mirror_limb_cmd(
+    creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output CreatureSpec path.")],
+    side: Annotated[
+        str, typer.Option(help="Side to mirror from: 'left' (Y>0) or 'right' (Y<0).")
+    ] = "left",
+) -> None:
+    """Mirror a creature's limbs from one side to the other for symmetry."""
+    from creature_lab.scaffold import mirror_limb
+
+    creature = _load_spec(creature_path, CreatureSpec)
+    try:
+        mirrored = mirror_limb(creature, side=side)
+    except ValueError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    _write_creature(mirrored, out)
+
+
+zoo_app = typer.Typer(help="Browse and run the curated Creature Zoo.")
+app.add_typer(zoo_app, name="zoo")
+
+
+@zoo_app.command("list")
+def zoo_list() -> None:
+    """List the built-in zoo creatures and their tasks."""
+    from creature_lab.zoo import default_task_name, list_zoo_creatures, zoo_tasks
+
+    table = Table(title="Creature Zoo")
+    table.add_column("creature")
+    table.add_column("tasks")
+    table.add_column("default task")
+    for name in list_zoo_creatures():
+        tasks = zoo_tasks(name)
+        table.add_row(name, ", ".join(tasks), default_task_name(name))
+    console.print(table)
+
+
+@zoo_app.command("run")
+def zoo_run(
+    name: Annotated[str, typer.Argument(help="Zoo creature name (see `zoo list`).")],
+    task: Annotated[
+        str | None, typer.Option(help="Task name for this creature (default: its crawl task).")
+    ] = None,
+    gui: Annotated[bool, typer.Option(help="Open a PyBullet GUI window.")] = False,
+    seed: Annotated[int | None, typer.Option(help="Seed recorded in the trace metadata.")] = None,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory to save the episode trace under.")
+    ] = DEFAULT_RUNS_DIR,
+) -> None:
+    """Run a zoo creature on one of its tasks and save the trace."""
+    from creature_lab.zoo import zoo_creature
+
+    try:
+        creature, task_spec = zoo_creature(name, task)
+    except KeyError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    _check_inputs(creature, task_spec)
+    trace = _simulate(creature, task_spec, gui=gui, seed=seed)
+    run_dir = save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
+    console.print(
+        f"[green]done[/green] {creature.name!r} on {task_spec.name!r}: "
+        f"score={trace.score:.4f} ({len(trace.frames)} step(s)) -> {run_dir}"
+    )
+
+
+@zoo_app.command("validate-all")
+def zoo_validate_all() -> None:
+    """Cross-validate every creature/task pair in the zoo."""
+    from creature_lab.validation import EpisodeInputError
+    from creature_lab.zoo import validate_all
+
+    try:
+        pairs = validate_all()
+    except EpisodeInputError as exc:
+        console.print(f"[red]error:[/red] zoo has an invalid creature/task: {exc}")
+        raise typer.Exit(code=1) from exc
+    for creature_name, task_name in pairs:
+        console.print(f"[green]ok[/green] {creature_name} / {task_name}")
+    console.print(f"[green]valid[/green] all {len(pairs)} zoo creature/task pair(s)")
+
+
+@app.command("export-urdf")
+def export_urdf_cmd(
+    creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output .urdf path.")],
+) -> None:
+    """Export a creature to a URDF robot description (capsules become cylinders)."""
+    from creature_lab.export import export_urdf
+
+    creature = _load_spec(creature_path, CreatureSpec)
+    out.write_text(export_urdf(creature))
+    console.print(f"[green]exported[/green] {creature.name!r} URDF -> {out}")
+
+
+@app.command("export-mjcf")
+def export_mjcf_cmd(
+    creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output .xml path.")],
+) -> None:
+    """Export a creature to a MuJoCo MJCF model."""
+    from creature_lab.export import export_mjcf
+
+    creature = _load_spec(creature_path, CreatureSpec)
+    out.write_text(export_mjcf(creature))
+    console.print(f"[green]exported[/green] {creature.name!r} MJCF -> {out}")
+
+
+@app.command("import-urdf")
+def import_urdf_cmd(
+    urdf_path: Annotated[Path, typer.Argument(help="Path to a .urdf file.")],
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output CreatureSpec path.")],
+) -> None:
+    """Best-effort import of a simple URDF into a CreatureSpec (skips meshes/sensors)."""
+    from creature_lab.export import import_urdf
+
+    if not urdf_path.exists():
+        console.print(f"[red]error:[/red] file not found: {urdf_path}")
+        raise typer.Exit(code=2)
+    try:
+        result = import_urdf(urdf_path.read_text())
+    except (ValueError, ET_PARSE_ERROR) as exc:
+        console.print(f"[red]error:[/red] could not import URDF: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    out.write_text(result.creature.model_dump_json(indent=2, exclude_none=True))
+    console.print(
+        f"[green]imported[/green] {result.creature.name!r} -> {out} "
+        f"({len(result.creature.parts)} part(s), {len(result.creature.joints)} joint(s))"
+    )
+    for warning in result.warnings:
+        console.print(f"[yellow]warning:[/yellow] {warning}")
 
 
 if __name__ == "__main__":
