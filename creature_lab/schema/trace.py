@@ -52,6 +52,10 @@ class FrameState(StrictModel):
     contacts: list[ContactSpec] = Field(default_factory=list)
     score: float = Field(default=0.0, allow_inf_nan=False)
     events: list[str] = Field(default_factory=list)
+    #: Closed-loop control record (populated by CreatureEnv). Both stay None for
+    #: open-loop runs, so older traces without these fields still load.
+    observations: list[float] | None = None
+    actions: list[float] | None = None
 
     @model_validator(mode="after")
     def validate_has_parts(self) -> FrameState:

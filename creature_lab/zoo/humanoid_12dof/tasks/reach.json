@@ -1,0 +1,8 @@
+{
+  "name": "reach",
+  "duration": 4.0,
+  "timestep": 0.016666666666666666,
+  "terrain": {"type": "plane", "friction": 1.0},
+  "target": {"type": "sphere", "position": [0.6, 0.0, 1.2], "radius": 0.2},
+  "reward": {"forward_distance": 0.0, "target_distance": 1.0, "energy_penalty": 0.001}
+}

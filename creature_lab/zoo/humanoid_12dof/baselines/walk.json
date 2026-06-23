@@ -1,0 +1,14 @@
+{
+  "creature": "humanoid_12dof",
+  "task": "walk",
+  "backend": "pybullet api 202010061",
+  "best_score": 0.3799,
+  "score_summary": {
+    "forward": 0.8799,
+    "target": 0.0,
+    "energy": -0.0,
+    "fall": -0.5,
+    "total": 0.3799
+  },
+  "note": "open-loop sinusoid baseline; untuned humanoid"
+}
