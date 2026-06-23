@@ -75,7 +75,7 @@ def test_short_episode_emits_finite_frames(backend):
 def test_ground_contacts_are_reported(backend):
     from creature_lab.library import default_creature
 
-    creature = default_creature()  # tripod with legs hanging below the torso
+    creature = default_creature()  # quadruped standing on four legs
     task = TaskSpec.model_validate({"name": "t", "duration": 2.0, "timestep": 1 / 60})
 
     frames = _run_episode(backend, creature, task)

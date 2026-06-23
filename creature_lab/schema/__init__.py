@@ -12,6 +12,7 @@ from creature_lab.schema.base import (
     StrictModel,
     Vector3,
 )
+from creature_lab.schema.control import ActionSpec, ObservationSpec
 from creature_lab.schema.creature import (
     CreatureSpec,
     JointSpec,
@@ -24,6 +25,7 @@ from creature_lab.schema.creature import (
 from creature_lab.schema.summary import EpisodeSummary
 from creature_lab.schema.task import (
     DamageEventSpec,
+    ImpulseEventSpec,
     RewardSpec,
     TargetSpec,
     TargetType,
@@ -40,6 +42,7 @@ from creature_lab.schema.trace import (
 )
 
 __all__ = [
+    "ActionSpec",
     "AgentStep",
     "AgentTrace",
     "ColorRGB",
@@ -49,11 +52,13 @@ __all__ = [
     "EpisodeSummary",
     "EpisodeTrace",
     "FrameState",
+    "ImpulseEventSpec",
     "JointLimit",
     "JointSpec",
     "JointType",
     "MotorSpec",
     "MotorType",
+    "ObservationSpec",
     "PartPose",
     "PartSpec",
     "Quaternion",

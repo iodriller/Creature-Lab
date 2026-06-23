@@ -1,0 +1,8 @@
+{
+  "name": "recover",
+  "duration": 6.0,
+  "timestep": 0.016666666666666666,
+  "terrain": {"type": "plane", "friction": 1.0},
+  "reward": {"forward_distance": 1.0},
+  "damage_event": {"time": 2.5, "part_id": "leg_0l"}
+}

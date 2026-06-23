@@ -23,6 +23,7 @@ viz = [
     "viser>=1.0",
     "trimesh>=4.0",  # true capsule meshes in the viewer
     "numpy>=1.26",  # mesh vertex colors
+    "matplotlib>=3.8",  # `plot` metric charts
 ]
 export = [
     "imageio>=2.31",
@@ -31,6 +32,12 @@ export = [
 ]
 llm = [
     "litellm>=1.0",  # provider abstraction for `creature-lab ask` (online mode)
+]
+evolve = [
+    "cmaes>=0.10",  # CMA-ES strategy for `creature-lab evolve --strategy cmaes`
+]
+mujoco = [
+    "mujoco>=3.0",  # MuJoCo backend + MJCF export round-trip (`run --backend mujoco`)
 ]
 
 [project.scripts]

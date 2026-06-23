@@ -73,6 +73,7 @@ class PyBulletBackend:
         self._energy = 0.0
         self._last_score_components: dict[str, float] = {}
         self._damage_fired = False
+        self._impulse_fired = False
 
     def build(self, creature: CreatureSpec, task: TaskSpec) -> None:
         self._creature = creature
@@ -89,6 +90,7 @@ class PyBulletBackend:
         self._energy = 0.0
         self._damaged_parts.clear()
         self._damage_fired = False
+        self._impulse_fired = False
         base_position, _ = pybullet.getBasePositionAndOrientation(
             self._body_id, physicsClientId=self._client
         )
@@ -112,6 +114,11 @@ class PyBulletBackend:
             self.damage_part(damage_event.part_id)
             self._damage_fired = True
             events.append(f"damage:{damage_event.part_id}")
+        impulse_event = self._task.impulse_event
+        if impulse_event is not None and not self._impulse_fired and self._t >= impulse_event.time:
+            self._apply_impulse(impulse_event)
+            self._impulse_fired = True
+            events.append(f"impulse:{impulse_event.part_id}")
         pybullet.setTimeStep(dt, physicsClientId=self._client)
         pybullet.stepSimulation(physicsClientId=self._client)
         self._accumulate_energy(dt)
@@ -146,6 +153,77 @@ class PyBulletBackend:
                 physicsClientId=self._client,
             )
 
+    def apply_joint_control(self, targets: dict[str, float], mode: str = "position") -> None:
+        """Drive joints directly by id in position/velocity/torque mode (used by CreatureEnv).
+
+        Unlike ``apply_motor_targets`` this applies to *any* hinge joint named in
+        ``targets`` (not only joints that carry a MotorSpec), so a policy can control
+        joints the open-loop gait does not.
+        """
+        if self._creature is None or self._body_id is None:
+            raise RuntimeError("build() must be called before apply_joint_control()")
+        joint_child = {joint.id: joint.child for joint in self._creature.joints}
+        for joint_id, value in targets.items():
+            link = self._joint_link.get(joint_id)
+            if link is None or joint_child.get(joint_id) in self._damaged_parts:
+                continue
+            if mode == "position":
+                pybullet.setJointMotorControl2(
+                    self._body_id,
+                    link,
+                    pybullet.POSITION_CONTROL,
+                    targetPosition=value,
+                    force=_MOTOR_MAX_FORCE,
+                    physicsClientId=self._client,
+                )
+            elif mode == "velocity":
+                pybullet.setJointMotorControl2(
+                    self._body_id,
+                    link,
+                    pybullet.VELOCITY_CONTROL,
+                    targetVelocity=value,
+                    force=_MOTOR_MAX_FORCE,
+                    physicsClientId=self._client,
+                )
+            elif mode == "torque":
+                # Disable the implicit velocity motor, then apply the torque directly.
+                pybullet.setJointMotorControl2(
+                    self._body_id,
+                    link,
+                    pybullet.VELOCITY_CONTROL,
+                    force=0.0,
+                    physicsClientId=self._client,
+                )
+                pybullet.setJointMotorControl2(
+                    self._body_id,
+                    link,
+                    pybullet.TORQUE_CONTROL,
+                    force=value,
+                    physicsClientId=self._client,
+                )
+            else:
+                raise ValueError(f"unknown control mode {mode!r}")
+
+    def _apply_impulse(self, impulse) -> None:
+        """Apply a one-step world-frame push at a part's current position."""
+        link_index = self._link_index[impulse.part_id]
+        if link_index == -1:
+            position, _ = pybullet.getBasePositionAndOrientation(
+                self._body_id, physicsClientId=self._client
+            )
+        else:
+            position = pybullet.getLinkState(
+                self._body_id, link_index, physicsClientId=self._client
+            )[0]
+        pybullet.applyExternalForce(
+            self._body_id,
+            link_index,
+            forceObj=list(impulse.force),
+            posObj=list(position),
+            flags=pybullet.WORLD_FRAME,
+            physicsClientId=self._client,
+        )
+
     def damage_part(self, part_id: str) -> None:
         if self._creature is None or self._body_id is None:
             raise RuntimeError("build() must be called before damage_part()")
@@ -166,6 +244,13 @@ class PyBulletBackend:
     def score_summary(self) -> dict[str, float]:
         """Per-component breakdown of the most recently read frame's score."""
         return dict(self._last_score_components)
+
+    def observe(self) -> FrameState:
+        """Read the current state as a FrameState without advancing physics.
+
+        Used by CreatureEnv to get the initial observation right after reset().
+        """
+        return self._read_frame()
 
     def _build_body(self, creature: CreatureSpec) -> None:
         parts_by_id = {part.id: part for part in creature.parts}

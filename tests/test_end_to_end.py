@@ -119,7 +119,7 @@ def test_demo_streams_and_saves(tmp_path):
 
     run_dir = _only_run_dir(runs_dir)
     trace = EpisodeTrace.model_validate_json((run_dir / "trace.json").read_text())
-    assert trace.creature_name == "tripod"
+    assert trace.creature_name == "quadruped"  # the built-in demo default
     assert (run_dir / "creature.json").exists()
     assert (run_dir / "task.json").exists()
     assert trace.meta is not None and trace.meta.creature_hash

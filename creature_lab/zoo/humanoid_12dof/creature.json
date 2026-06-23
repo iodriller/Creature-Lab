@@ -1,0 +1,598 @@
+{
+  "name": "humanoid",
+  "parts": [
+    {
+      "id": "torso",
+      "shape": "box",
+      "mass": 27.0,
+      "color": [
+        0.4,
+        0.45,
+        0.7
+      ],
+      "size": [
+        0.192,
+        0.288,
+        0.48
+      ]
+    },
+    {
+      "id": "head",
+      "shape": "sphere",
+      "mass": 4.8,
+      "color": [
+        0.9,
+        0.75,
+        0.6
+      ],
+      "radius": 0.128
+    },
+    {
+      "id": "upper_leg_l",
+      "shape": "capsule",
+      "mass": 7.199999999999999,
+      "color": [
+        0.85,
+        0.5,
+        0.55
+      ],
+      "radius": 0.05600000000000001,
+      "length": 0.384
+    },
+    {
+      "id": "lower_leg_l",
+      "shape": "capsule",
+      "mass": 5.039999999999999,
+      "color": [
+        0.85,
+        0.5,
+        0.55
+      ],
+      "radius": 0.05600000000000001,
+      "length": 0.384
+    },
+    {
+      "id": "foot_l",
+      "shape": "capsule",
+      "mass": 2.1599999999999997,
+      "color": [
+        0.85,
+        0.5,
+        0.55
+      ],
+      "radius": 0.05600000000000001,
+      "length": 0.192
+    },
+    {
+      "id": "upper_arm_l",
+      "shape": "capsule",
+      "mass": 3.5999999999999996,
+      "color": [
+        0.85,
+        0.5,
+        0.55
+      ],
+      "radius": 0.05600000000000001,
+      "length": 0.288
+    },
+    {
+      "id": "lower_arm_l",
+      "shape": "capsule",
+      "mass": 2.5199999999999996,
+      "color": [
+        0.85,
+        0.5,
+        0.55
+      ],
+      "radius": 0.05600000000000001,
+      "length": 0.256
+    },
+    {
+      "id": "hand_l",
+      "shape": "capsule",
+      "mass": 1.0799999999999998,
+      "color": [
+        0.85,
+        0.5,
+        0.55
+      ],
+      "radius": 0.05600000000000001,
+      "length": 0.128
+    },
+    {
+      "id": "upper_leg_r",
+      "shape": "capsule",
+      "mass": 7.199999999999999,
+      "color": [
+        0.85,
+        0.5,
+        0.55
+      ],
+      "radius": 0.05600000000000001,
+      "length": 0.384
+    },
+    {
+      "id": "lower_leg_r",
+      "shape": "capsule",
+      "mass": 5.039999999999999,
+      "color": [
+        0.85,
+        0.5,
+        0.55
+      ],
+      "radius": 0.05600000000000001,
+      "length": 0.384
+    },
+    {
+      "id": "foot_r",
+      "shape": "capsule",
+      "mass": 2.1599999999999997,
+      "color": [
+        0.85,
+        0.5,
+        0.55
+      ],
+      "radius": 0.05600000000000001,
+      "length": 0.192
+    },
+    {
+      "id": "upper_arm_r",
+      "shape": "capsule",
+      "mass": 3.5999999999999996,
+      "color": [
+        0.85,
+        0.5,
+        0.55
+      ],
+      "radius": 0.05600000000000001,
+      "length": 0.288
+    },
+    {
+      "id": "lower_arm_r",
+      "shape": "capsule",
+      "mass": 2.5199999999999996,
+      "color": [
+        0.85,
+        0.5,
+        0.55
+      ],
+      "radius": 0.05600000000000001,
+      "length": 0.256
+    },
+    {
+      "id": "hand_r",
+      "shape": "capsule",
+      "mass": 1.0799999999999998,
+      "color": [
+        0.85,
+        0.5,
+        0.55
+      ],
+      "radius": 0.05600000000000001,
+      "length": 0.128
+    }
+  ],
+  "joints": [
+    {
+      "id": "neck",
+      "parent": "torso",
+      "child": "head",
+      "type": "fixed",
+      "anchor": [
+        0.0,
+        0.0,
+        0.368
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rest_orientation": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "id": "hip_l",
+      "parent": "torso",
+      "child": "upper_leg_l",
+      "type": "hinge",
+      "anchor": [
+        0.0,
+        0.1152,
+        -0.24
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rest_orientation": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "limit": [
+        -1.2,
+        1.2
+      ]
+    },
+    {
+      "id": "knee_l",
+      "parent": "upper_leg_l",
+      "child": "lower_leg_l",
+      "type": "hinge",
+      "anchor": [
+        0.0,
+        0.0,
+        -0.384
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rest_orientation": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "limit": [
+        -1.2,
+        1.2
+      ]
+    },
+    {
+      "id": "ankle_l",
+      "parent": "lower_leg_l",
+      "child": "foot_l",
+      "type": "hinge",
+      "anchor": [
+        0.0,
+        0.0,
+        -0.384
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rest_orientation": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "limit": [
+        -1.2,
+        1.2
+      ]
+    },
+    {
+      "id": "shoulder_l",
+      "parent": "torso",
+      "child": "upper_arm_l",
+      "type": "hinge",
+      "anchor": [
+        0.0,
+        0.208,
+        0.176
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rest_orientation": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "limit": [
+        -1.2,
+        1.2
+      ]
+    },
+    {
+      "id": "elbow_l",
+      "parent": "upper_arm_l",
+      "child": "lower_arm_l",
+      "type": "hinge",
+      "anchor": [
+        0.0,
+        0.0,
+        -0.288
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rest_orientation": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "limit": [
+        -1.2,
+        1.2
+      ]
+    },
+    {
+      "id": "wrist_l",
+      "parent": "lower_arm_l",
+      "child": "hand_l",
+      "type": "hinge",
+      "anchor": [
+        0.0,
+        0.0,
+        -0.256
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rest_orientation": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "limit": [
+        -1.2,
+        1.2
+      ]
+    },
+    {
+      "id": "hip_r",
+      "parent": "torso",
+      "child": "upper_leg_r",
+      "type": "hinge",
+      "anchor": [
+        0.0,
+        -0.1152,
+        -0.24
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rest_orientation": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "limit": [
+        -1.2,
+        1.2
+      ]
+    },
+    {
+      "id": "knee_r",
+      "parent": "upper_leg_r",
+      "child": "lower_leg_r",
+      "type": "hinge",
+      "anchor": [
+        0.0,
+        0.0,
+        -0.384
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rest_orientation": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "limit": [
+        -1.2,
+        1.2
+      ]
+    },
+    {
+      "id": "ankle_r",
+      "parent": "lower_leg_r",
+      "child": "foot_r",
+      "type": "hinge",
+      "anchor": [
+        0.0,
+        0.0,
+        -0.384
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rest_orientation": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "limit": [
+        -1.2,
+        1.2
+      ]
+    },
+    {
+      "id": "shoulder_r",
+      "parent": "torso",
+      "child": "upper_arm_r",
+      "type": "hinge",
+      "anchor": [
+        0.0,
+        -0.208,
+        0.176
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rest_orientation": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "limit": [
+        -1.2,
+        1.2
+      ]
+    },
+    {
+      "id": "elbow_r",
+      "parent": "upper_arm_r",
+      "child": "lower_arm_r",
+      "type": "hinge",
+      "anchor": [
+        0.0,
+        0.0,
+        -0.288
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rest_orientation": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "limit": [
+        -1.2,
+        1.2
+      ]
+    },
+    {
+      "id": "wrist_r",
+      "parent": "lower_arm_r",
+      "child": "hand_r",
+      "type": "hinge",
+      "anchor": [
+        0.0,
+        0.0,
+        -0.256
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "rest_orientation": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "limit": [
+        -1.2,
+        1.2
+      ]
+    }
+  ],
+  "motors": [
+    {
+      "joint": "hip_l",
+      "type": "sinusoid",
+      "amplitude": 0.4,
+      "frequency": 1.0,
+      "phase": 0.0
+    },
+    {
+      "joint": "knee_l",
+      "type": "sinusoid",
+      "amplitude": 0.4,
+      "frequency": 1.0,
+      "phase": 0.0
+    },
+    {
+      "joint": "ankle_l",
+      "type": "sinusoid",
+      "amplitude": 0.4,
+      "frequency": 1.0,
+      "phase": 0.0
+    },
+    {
+      "joint": "shoulder_l",
+      "type": "sinusoid",
+      "amplitude": 0.4,
+      "frequency": 1.0,
+      "phase": 3.141592653589793
+    },
+    {
+      "joint": "elbow_l",
+      "type": "sinusoid",
+      "amplitude": 0.4,
+      "frequency": 1.0,
+      "phase": 0.0
+    },
+    {
+      "joint": "wrist_l",
+      "type": "sinusoid",
+      "amplitude": 0.4,
+      "frequency": 1.0,
+      "phase": 0.0
+    },
+    {
+      "joint": "hip_r",
+      "type": "sinusoid",
+      "amplitude": 0.4,
+      "frequency": 1.0,
+      "phase": 3.141592653589793
+    },
+    {
+      "joint": "knee_r",
+      "type": "sinusoid",
+      "amplitude": 0.4,
+      "frequency": 1.0,
+      "phase": 3.141592653589793
+    },
+    {
+      "joint": "ankle_r",
+      "type": "sinusoid",
+      "amplitude": 0.4,
+      "frequency": 1.0,
+      "phase": 3.141592653589793
+    },
+    {
+      "joint": "shoulder_r",
+      "type": "sinusoid",
+      "amplitude": 0.4,
+      "frequency": 1.0,
+      "phase": 6.283185307179586
+    },
+    {
+      "joint": "elbow_r",
+      "type": "sinusoid",
+      "amplitude": 0.4,
+      "frequency": 1.0,
+      "phase": 3.141592653589793
+    },
+    {
+      "joint": "wrist_r",
+      "type": "sinusoid",
+      "amplitude": 0.4,
+      "frequency": 1.0,
+      "phase": 3.141592653589793
+    }
+  ],
+  "metadata": {}
+}

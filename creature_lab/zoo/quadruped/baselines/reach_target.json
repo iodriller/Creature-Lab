@@ -1,0 +1,14 @@
+{
+  "creature": "quadruped",
+  "task": "reach_target",
+  "backend": "pybullet api 202010061",
+  "best_score": 0.667,
+  "score_summary": {
+    "forward": 0.0,
+    "target": 0.8199,
+    "energy": -0.1529,
+    "fall": 0.0,
+    "total": 0.667
+  },
+  "note": "open-loop sinusoid controller baseline"
+}

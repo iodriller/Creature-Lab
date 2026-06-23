@@ -20,3 +20,5 @@ outputs/
 .DS_Store
 .idea/
 .vscode/
+MUJOCO_LOG.TXT
+*.urdf

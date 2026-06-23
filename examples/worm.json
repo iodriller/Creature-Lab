@@ -1,0 +1,22 @@
+{
+  "name": "worm",
+  "parts": [
+    {"id": "seg0", "shape": "capsule", "length": 0.18, "radius": 0.05, "mass": 0.4, "color": [0.9, 0.45, 0.2]},
+    {"id": "seg1", "shape": "capsule", "length": 0.18, "radius": 0.05, "mass": 0.4, "color": [0.93, 0.55, 0.22]},
+    {"id": "seg2", "shape": "capsule", "length": 0.18, "radius": 0.05, "mass": 0.4, "color": [0.95, 0.65, 0.25]},
+    {"id": "seg3", "shape": "capsule", "length": 0.18, "radius": 0.05, "mass": 0.4, "color": [0.97, 0.72, 0.3]},
+    {"id": "seg4", "shape": "capsule", "length": 0.18, "radius": 0.05, "mass": 0.4, "color": [0.98, 0.8, 0.35]}
+  ],
+  "joints": [
+    {"id": "j1", "parent": "seg0", "child": "seg1", "type": "hinge", "anchor": [-0.2, 0, 0], "axis": [0, 1, 0], "limit": [-1.0, 1.0], "rest_orientation": [0.7071, 0, 0.7071, 0]},
+    {"id": "j2", "parent": "seg1", "child": "seg2", "type": "hinge", "anchor": [-0.2, 0, 0], "axis": [0, 1, 0], "limit": [-1.0, 1.0], "rest_orientation": [0.7071, 0, 0.7071, 0]},
+    {"id": "j3", "parent": "seg2", "child": "seg3", "type": "hinge", "anchor": [-0.2, 0, 0], "axis": [0, 1, 0], "limit": [-1.0, 1.0], "rest_orientation": [0.7071, 0, 0.7071, 0]},
+    {"id": "j4", "parent": "seg3", "child": "seg4", "type": "hinge", "anchor": [-0.2, 0, 0], "axis": [0, 1, 0], "limit": [-1.0, 1.0], "rest_orientation": [0.7071, 0, 0.7071, 0]}
+  ],
+  "motors": [
+    {"joint": "j1", "type": "sinusoid", "amplitude": 1.0, "frequency": 1.5, "phase": -2.0},
+    {"joint": "j2", "type": "sinusoid", "amplitude": 1.0, "frequency": 1.5, "phase": -4.0},
+    {"joint": "j3", "type": "sinusoid", "amplitude": 1.0, "frequency": 1.5, "phase": -6.0},
+    {"joint": "j4", "type": "sinusoid", "amplitude": 1.0, "frequency": 1.5, "phase": -8.0}
+  ]
+}

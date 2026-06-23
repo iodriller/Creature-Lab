@@ -1,0 +1,22 @@
+{
+  "name": "quadruped",
+  "parts": [
+    {"id": "torso", "shape": "box", "size": [0.4, 0.25, 0.08], "mass": 1.0, "color": [0.2, 0.55, 0.9]},
+    {"id": "leg_fl", "shape": "capsule", "length": 0.22, "radius": 0.03, "mass": 0.15, "color": [0.3, 0.7, 0.95]},
+    {"id": "leg_fr", "shape": "capsule", "length": 0.22, "radius": 0.03, "mass": 0.15, "color": [0.3, 0.7, 0.95]},
+    {"id": "leg_rl", "shape": "capsule", "length": 0.22, "radius": 0.03, "mass": 0.15, "color": [0.25, 0.6, 0.9]},
+    {"id": "leg_rr", "shape": "capsule", "length": 0.22, "radius": 0.03, "mass": 0.15, "color": [0.25, 0.6, 0.9]}
+  ],
+  "joints": [
+    {"id": "hip_fl", "parent": "torso", "child": "leg_fl", "type": "hinge", "anchor": [0.15, 0.16, -0.04], "axis": [0, 1, 0], "limit": [-1.2, 1.2], "rest_orientation": [0.9537, 0, -0.3007, 0]},
+    {"id": "hip_fr", "parent": "torso", "child": "leg_fr", "type": "hinge", "anchor": [0.15, -0.16, -0.04], "axis": [0, 1, 0], "limit": [-1.2, 1.2], "rest_orientation": [0.9537, 0, -0.3007, 0]},
+    {"id": "hip_rl", "parent": "torso", "child": "leg_rl", "type": "hinge", "anchor": [-0.15, 0.16, -0.04], "axis": [0, 1, 0], "limit": [-1.2, 1.2], "rest_orientation": [0.9537, 0, -0.3007, 0]},
+    {"id": "hip_rr", "parent": "torso", "child": "leg_rr", "type": "hinge", "anchor": [-0.15, -0.16, -0.04], "axis": [0, 1, 0], "limit": [-1.2, 1.2], "rest_orientation": [0.9537, 0, -0.3007, 0]}
+  ],
+  "motors": [
+    {"joint": "hip_fl", "type": "sinusoid", "amplitude": 0.7, "frequency": 2.0, "phase": 0.0},
+    {"joint": "hip_fr", "type": "sinusoid", "amplitude": 0.7, "frequency": 2.0, "phase": 3.1416},
+    {"joint": "hip_rl", "type": "sinusoid", "amplitude": 0.7, "frequency": 2.0, "phase": 3.1416},
+    {"joint": "hip_rr", "type": "sinusoid", "amplitude": 0.7, "frequency": 2.0, "phase": 0.0}
+  ]
+}
