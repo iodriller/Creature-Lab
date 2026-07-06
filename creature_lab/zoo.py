@@ -7,7 +7,9 @@ the package, so ``creature-lab zoo run <name>`` works from an installed wheel.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 from creature_lab.schema import CreatureSpec, TaskSpec
 
@@ -66,6 +68,12 @@ def zoo_creature(name: str, task: str | None = None) -> tuple[CreatureSpec, Task
         raise KeyError(f"unknown task {task_name!r} for {name!r}; choose one of: {available}")
     task_spec = TaskSpec.model_validate_json(task_path.read_text())
     return creature, task_spec
+
+
+def zoo_baseline(name: str, task: str) -> dict[str, Any] | None:
+    """Load the optional packaged baseline metadata for a zoo creature/task pair."""
+    path = _creature_dir(name) / "baselines" / f"{task}.json"
+    return json.loads(path.read_text()) if path.exists() else None
 
 
 def validate_all() -> list[tuple[str, str]]:

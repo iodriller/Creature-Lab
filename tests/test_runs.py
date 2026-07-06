@@ -1,6 +1,19 @@
 """Tests for episode trace persistence (creature_lab.runs)."""
 
-from creature_lab.runs import load_run, load_trace, new_run_id, save_run, save_trace
+from pathlib import Path
+
+import pytest
+
+from creature_lab.runs import (
+    latest_run_id,
+    load_run,
+    load_trace,
+    new_run_id,
+    resolve_run_path,
+    resolve_trace_path,
+    save_run,
+    save_trace,
+)
 from creature_lab.schema import CreatureSpec, EpisodeTrace, TaskSpec
 
 _CREATURE = {
@@ -29,6 +42,7 @@ def test_save_and_load_round_trip(tmp_path):
 
     assert saved_path == tmp_path / trace.run_id / "trace.json"
     assert load_trace(saved_path) == trace
+    assert latest_run_id(tmp_path) == trace.run_id
 
 
 def test_load_trace_from_run_directory(tmp_path):
@@ -36,6 +50,23 @@ def test_load_trace_from_run_directory(tmp_path):
     save_trace(trace, runs_dir=tmp_path)
 
     assert load_trace(tmp_path / trace.run_id) == trace
+
+
+def test_latest_alias_resolves_to_most_recent_run(tmp_path):
+    first = _trace("first")
+    second = _trace("second")
+    save_trace(first, runs_dir=tmp_path)
+    save_trace(second, runs_dir=tmp_path)
+
+    assert latest_run_id(tmp_path) == "second"
+    assert resolve_run_path(Path("latest"), tmp_path) == tmp_path / "second"
+    assert resolve_trace_path(Path("latest"), tmp_path) == tmp_path / "second" / "trace.json"
+    assert load_trace(Path("latest"), runs_dir=tmp_path) == second
+
+
+def test_latest_alias_reports_missing_marker(tmp_path):
+    with pytest.raises(FileNotFoundError, match="no latest run"):
+        latest_run_id(tmp_path)
 
 
 def test_run_ids_are_unique():

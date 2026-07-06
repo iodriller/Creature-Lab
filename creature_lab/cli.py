@@ -6,7 +6,7 @@ import json
 import random
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Annotated, TypeVar
+from typing import Annotated, Any, TypeVar
 from xml.etree.ElementTree import ParseError as ET_PARSE_ERROR
 
 import typer
@@ -35,6 +35,7 @@ from creature_lab.library import (
 from creature_lab.runs import (
     DEFAULT_RUNS_DIR,
     new_run_id,
+    resolve_run_path,
     resolve_trace_path,
     save_run,
 )
@@ -42,7 +43,12 @@ from creature_lab.schema import CreatureSpec, EpisodeTrace, FrameState, TaskSpec
 from creature_lab.schema.trace import TRACE_SCHEMA_VERSION
 from creature_lab.validation import EpisodeInputError, validate_episode_inputs
 
-app = typer.Typer(help="Minimal, visual, backend-agnostic creature simulation lab.")
+app = typer.Typer(
+    help=(
+        "Tiny local lab for designing, running, diagnosing, and improving "
+        "modular robot-creatures from JSON."
+    )
+)
 console = Console()
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -69,21 +75,70 @@ def _load_spec(path: Path, model: type[ModelT]) -> ModelT:
         raise typer.Exit(code=1) from exc
 
 
-def _load_creature_for_trace(path: Path, creature_path: Path | None) -> CreatureSpec:
+def _write_stdout(text: str) -> None:
+    console.file.write(text)
+    if not text.endswith("\n"):
+        console.file.write("\n")
+
+
+def _print_json(data: Any) -> None:
+    _write_stdout(json.dumps(data, indent=2, sort_keys=True))
+
+
+def _resolve_run_path(path: Path, runs_dir: Path = DEFAULT_RUNS_DIR) -> Path:
+    try:
+        return resolve_run_path(path, runs_dir=runs_dir)
+    except FileNotFoundError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+
+def _resolve_trace_path(path: Path, runs_dir: Path = DEFAULT_RUNS_DIR) -> Path:
+    try:
+        return resolve_trace_path(path, runs_dir=runs_dir)
+    except FileNotFoundError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+
+def _run_dir_for(path: Path, runs_dir: Path = DEFAULT_RUNS_DIR) -> Path:
+    resolved = _resolve_run_path(path, runs_dir=runs_dir)
+    return resolved if resolved.is_dir() else resolved.parent
+
+
+def _load_creature_for_trace(
+    path: Path, creature_path: Path | None, runs_dir: Path = DEFAULT_RUNS_DIR
+) -> CreatureSpec:
     """Load the creature for a trace, defaulting to creature.json in the run directory."""
     if creature_path is None:
-        run_dir = path if path.is_dir() else path.parent
+        run_dir = _run_dir_for(path, runs_dir=runs_dir)
         creature_path = run_dir / "creature.json"
     return _load_spec(creature_path, CreatureSpec)
 
 
-def _load_task_for_trace(path: Path, task_path: Path | None) -> TaskSpec | None:
+def _load_task_for_trace(
+    path: Path, task_path: Path | None, runs_dir: Path = DEFAULT_RUNS_DIR
+) -> TaskSpec | None:
     """Load the task for a trace: explicit --task, else task.json in the run dir if present."""
     if task_path is not None:
         return _load_spec(task_path, TaskSpec)
-    run_dir = path if path.is_dir() else path.parent
+    run_dir = _run_dir_for(path, runs_dir=runs_dir)
     candidate = run_dir / "task.json"
     return _load_spec(candidate, TaskSpec) if candidate.exists() else None
+
+
+def _saved_run_payload(
+    creature: CreatureSpec, task: TaskSpec, trace: EpisodeTrace, run_dir: Path
+) -> dict[str, Any]:
+    return {
+        "run_id": trace.run_id,
+        "run_dir": str(run_dir),
+        "creature": creature.name,
+        "task": task.name,
+        "backend": trace.backend,
+        "score": trace.score,
+        "frames": len(trace.frames),
+    }
 
 
 def _check_inputs(creature: CreatureSpec, task: TaskSpec) -> None:
@@ -211,7 +266,7 @@ def _simulate(
     return _trace_from_frames(creature, task, frames, meta=meta, backend=backend)
 
 
-@app.command()
+@app.command(rich_help_panel="Advanced")
 def version() -> None:
     """Print the Creature Lab version."""
     console.print(f"creature-lab {VERSION}")
@@ -220,7 +275,7 @@ def version() -> None:
 _STATUS_STYLE = {"ok": "green", "missing": "red", "warn": "yellow", "info": "cyan"}
 
 
-@app.command()
+@app.command(rich_help_panel="Advanced")
 def doctor() -> None:
     """Check the environment: optional extras, providers, and that examples run."""
     table = Table(title=f"creature-lab {VERSION} doctor")
@@ -233,7 +288,7 @@ def doctor() -> None:
     console.print(table)
 
 
-@app.command()
+@app.command(rich_help_panel="Advanced")
 def validate(
     path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
     task: Annotated[
@@ -255,7 +310,7 @@ def validate(
         console.print("[green]ok[/green] creature and task are compatible")
 
 
-@app.command()
+@app.command(rich_help_panel="Run And Improve")
 def run(
     creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
     task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
@@ -270,6 +325,9 @@ def run(
     runs_dir: Annotated[
         Path, typer.Option(help="Directory to save the episode trace under.")
     ] = DEFAULT_RUNS_DIR,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable run metadata.")
+    ] = False,
 ) -> None:
     """Run a short physics episode, save its trace, and print the final score."""
     creature = _load_spec(creature_path, CreatureSpec)
@@ -280,6 +338,9 @@ def run(
         creature, task_spec, gui=gui, seed=seed, controller=controller, backend=backend
     )
     run_dir = save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
+    if json_output:
+        _print_json(_saved_run_payload(creature, task_spec, trace, run_dir))
+        return
 
     console.print(
         f"[green]done[/green] {creature.name!r} on {task_spec.name!r}: "
@@ -287,7 +348,7 @@ def run(
     )
 
 
-@app.command()
+@app.command(rich_help_panel="Start Here")
 def demo(
     creature_path: Annotated[
         Path | None, typer.Argument(help="CreatureSpec JSON (overrides --creature).")
@@ -394,7 +455,7 @@ def _feature_evaluate(creature: CreatureSpec, task: TaskSpec) -> Evaluation:
     return Evaluation(trace.score, (summary.forward_displacement, _gait_symmetry(trace)))
 
 
-@app.command()
+@app.command(rich_help_panel="Run And Improve")
 def evolve(
     creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
     task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
@@ -409,6 +470,9 @@ def evolve(
     runs_dir: Annotated[
         Path, typer.Option(help="Directory to save the best creature and trace under.")
     ] = DEFAULT_RUNS_DIR,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable best-run metadata.")
+    ] = False,
 ) -> None:
     """Evolve a creature from a seed, saving the best one, a lineage, and any archive."""
     creature = _load_spec(creature_path, CreatureSpec)
@@ -475,6 +539,15 @@ def evolve(
         }
         (run_dir / "archive.json").write_text(json.dumps(archive, indent=2))
 
+    if json_output:
+        payload = _saved_run_payload(result.best, task_spec, best_trace, run_dir)
+        payload["strategy"] = strategy
+        payload["attempts"] = attempts
+        payload["seed_score"] = result.history[0].score
+        payload["best_score"] = result.best_score
+        _print_json(payload)
+        return
+
     table = Table(title=f"{creature.name!r} evolve ({strategy}, {attempts} attempts, seed {seed})")
     table.add_column("attempt", justify="right")
     table.add_column("score", justify="right")
@@ -492,7 +565,142 @@ def evolve(
     )
 
 
-@app.command()
+@app.command(rich_help_panel="Run And Improve")
+def bench(
+    zoo: Annotated[bool, typer.Option("--zoo", help="Benchmark packaged zoo creatures.")] = False,
+    task: Annotated[
+        str | None,
+        typer.Option(help="Only run zoo creatures that include this task name."),
+    ] = None,
+    attempts: Annotated[int, typer.Option(help="Runs per creature/task pair.")] = 1,
+    seed: Annotated[int, typer.Option(help="Base seed recorded in each trace.")] = 0,
+    backend: Annotated[
+        str, typer.Option(help="Physics backend: 'pybullet' or 'mujoco'.")
+    ] = "pybullet",
+    controller: Annotated[
+        str, typer.Option(help="Open-loop controller: 'sinusoid' or 'cpg'.")
+    ] = "sinusoid",
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory to save benchmark runs under.")
+    ] = DEFAULT_RUNS_DIR,
+    out: Annotated[
+        Path | None, typer.Option("--out", "-o", help="Write benchmark JSON here.")
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print benchmark JSON instead of a table.")
+    ] = False,
+) -> None:
+    """Run a reproducible local benchmark over the packaged zoo."""
+    if not zoo:
+        console.print("[red]error:[/red] use --zoo to benchmark packaged creatures")
+        raise typer.Exit(code=2)
+    if attempts < 1:
+        console.print("[red]error:[/red] --attempts must be at least 1")
+        raise typer.Exit(code=2)
+
+    from creature_lab.zoo import (
+        default_task_name,
+        list_zoo_creatures,
+        zoo_baseline,
+        zoo_creature,
+        zoo_tasks,
+    )
+
+    pairs: list[tuple[str, str]] = []
+    for name in list_zoo_creatures():
+        task_name = task or default_task_name(name)
+        if task_name in zoo_tasks(name):
+            pairs.append((name, task_name))
+    if not pairs:
+        console.print(f"[red]error:[/red] no zoo creatures include task {task!r}")
+        raise typer.Exit(code=1)
+
+    results: list[dict[str, Any]] = []
+    for name, task_name in pairs:
+        creature, task_spec = zoo_creature(name, task_name)
+        _check_inputs(creature, task_spec)
+        scores: list[float] = []
+        run_dirs: list[str] = []
+        for index in range(attempts):
+            trace = _simulate(
+                creature,
+                task_spec,
+                seed=seed + index,
+                controller=controller,
+                backend=backend,
+            )
+            run_dir = save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
+            scores.append(trace.score)
+            run_dirs.append(str(run_dir))
+
+        baseline = zoo_baseline(name, task_name)
+        baseline_score = baseline.get("best_score") if baseline else None
+        threshold = None
+        passed = None
+        best_score = max(scores)
+        if isinstance(baseline_score, int | float):
+            threshold = baseline_score * 0.9 if baseline_score > 0 else baseline_score
+            passed = best_score >= threshold
+        results.append(
+            {
+                "creature": name,
+                "task": task_name,
+                "backend": backend,
+                "controller": controller,
+                "seed": seed,
+                "attempts": attempts,
+                "scores": scores,
+                "best_score": best_score,
+                "mean_score": sum(scores) / len(scores),
+                "baseline_score": baseline_score,
+                "pass_threshold": threshold,
+                "passed": passed,
+                "runs": run_dirs,
+            }
+        )
+
+    payload = {
+        "kind": "zoo_benchmark",
+        "backend": backend,
+        "controller": controller,
+        "seed": seed,
+        "attempts": attempts,
+        "results": results,
+    }
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2))
+
+    if json_output:
+        _print_json(payload)
+        return
+
+    table = Table(title=f"zoo benchmark ({len(results)} pair(s), {attempts} attempt(s))")
+    table.add_column("creature")
+    table.add_column("task")
+    table.add_column("best", justify="right")
+    table.add_column("baseline", justify="right")
+    table.add_column("pass")
+    for result in results:
+        passed_value = result["passed"]
+        if passed_value is None:
+            status = "-"
+        else:
+            status = "[green]yes[/green]" if passed_value else "[red]no[/red]"
+        baseline_value = result["baseline_score"]
+        table.add_row(
+            result["creature"],
+            result["task"],
+            f"{result['best_score']:.4f}",
+            "-" if baseline_value is None else f"{baseline_value:.4f}",
+            status,
+        )
+    console.print(table)
+    if out is not None:
+        console.print(f"[green]wrote[/green] benchmark JSON -> {out}")
+
+
+@app.command(rich_help_panel="Advanced")
 def lineage(
     path: Annotated[
         Path, typer.Argument(help="Path to an evolve run directory (or lineage.json).")
@@ -536,7 +744,7 @@ def lineage(
     render(None, 0)
 
 
-@app.command()
+@app.command(rich_help_panel="Run And Improve")
 def ask(
     goal: Annotated[str, typer.Argument(help="Plain-language design goal.")],
     creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
@@ -550,6 +758,9 @@ def ask(
     runs_dir: Annotated[
         Path, typer.Option(help="Directory to save the best creature and traces under.")
     ] = DEFAULT_RUNS_DIR,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable best-run metadata.")
+    ] = False,
 ) -> None:
     """Iteratively improve a creature toward a goal using validated design tools.
 
@@ -592,6 +803,16 @@ def ask(
     best_trace = _simulate(result.best, task_spec, seed=seed)
     run_dir = save_run(result.best, best_trace, runs_dir=runs_dir, task=task_spec)
     (run_dir / "agent.json").write_text(result.trace.model_dump_json(indent=2))
+    if json_output:
+        payload = _saved_run_payload(result.best, task_spec, best_trace, run_dir)
+        payload["goal"] = goal
+        payload["attempts"] = attempts
+        payload["best_score"] = result.best_score
+        payload["accepted_edits"] = len(
+            [step for step in result.trace.steps if step.accepted and step.attempt > 0]
+        )
+        _print_json(payload)
+        return
 
     table = Table(title=f"ask {goal!r} ({attempts} attempts)")
     table.add_column("attempt", justify="right")
@@ -617,12 +838,15 @@ def ask(
     )
 
 
-@app.command()
+@app.command(rich_help_panel="Replay And Debug")
 def replay(
     path: Annotated[Path, typer.Argument(help="Path to a trace.json file or run directory.")],
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory used when resolving the `latest` alias.")
+    ] = DEFAULT_RUNS_DIR,
 ) -> None:
     """Print a summary of a saved episode trace."""
-    trace = _load_spec(resolve_trace_path(path), EpisodeTrace)
+    trace = _load_spec(_resolve_trace_path(path, runs_dir), EpisodeTrace)
     duration = trace.frames[-1].t  # total simulated time (final frame timestamp)
     console.print(
         f"[green]trace[/green] {trace.run_id!r}: {trace.creature_name!r} on "
@@ -631,15 +855,34 @@ def replay(
     )
 
 
-@app.command()
+@app.command(rich_help_panel="Replay And Debug")
 def inspect(
     path: Annotated[Path, typer.Argument(help="Path to a run directory (or trace.json).")],
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory used when resolving the `latest` alias.")
+    ] = DEFAULT_RUNS_DIR,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable inspection data.")
+    ] = False,
 ) -> None:
     """Print a detailed diagnostic summary of a saved run."""
-    trace = _load_spec(resolve_trace_path(path), EpisodeTrace)
-    task = _load_task_for_trace(path, None)
+    trace = _load_spec(_resolve_trace_path(path, runs_dir), EpisodeTrace)
+    task = _load_task_for_trace(path, None, runs_dir)
     summary = summarize_episode(trace, task)
     meta = trace.meta
+    if json_output:
+        _print_json(
+            {
+                "run_id": trace.run_id,
+                "creature": trace.creature_name,
+                "task": trace.task_name,
+                "backend": trace.backend,
+                "score": trace.score,
+                "summary": summary.model_dump(),
+                "meta": meta.model_dump() if meta else None,
+            }
+        )
+        return
 
     table = Table(title=f"run {trace.run_id!r}: {trace.creature_name!r} on {trace.task_name!r}")
     table.add_column("field")
@@ -679,7 +922,40 @@ def inspect(
         console.print(f"[yellow]warning:[/yellow] {warning}")
 
 
-@app.command()
+@app.command(rich_help_panel="Replay And Debug")
+def report(
+    path: Annotated[Path, typer.Argument(help="Path to a run directory, trace.json, or `latest`.")],
+    out: Annotated[
+        Path | None, typer.Option("--out", "-o", help="Write the report here instead of stdout.")
+    ] = None,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory used when resolving the `latest` alias.")
+    ] = DEFAULT_RUNS_DIR,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Render the report as JSON instead of Markdown.")
+    ] = False,
+) -> None:
+    """Generate a concise run report with score, diagnostics, and artifact paths."""
+    from creature_lab.reports import build_report, report_to_markdown
+
+    try:
+        data = build_report(path, runs_dir=runs_dir)
+    except FileNotFoundError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    rendered = (
+        json.dumps(data, indent=2, sort_keys=True) if json_output else report_to_markdown(data)
+    )
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(rendered)
+        console.print(f"[green]wrote[/green] report -> {out}")
+        return
+    _write_stdout(rendered)
+
+
+@app.command(rich_help_panel="Replay And Debug")
 def diagnose(
     path: Annotated[Path, typer.Argument(help="Path to a run directory (or trace.json).")],
     creature_path: Annotated[
@@ -691,14 +967,33 @@ def diagnose(
     task: Annotated[
         Path | None, typer.Option(help="TaskSpec JSON (defaults to task.json in the run dir).")
     ] = None,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory used when resolving the `latest` alias.")
+    ] = DEFAULT_RUNS_DIR,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable diagnosis data.")
+    ] = False,
 ) -> None:
     """Explain *why* a creature failed: locomotion signals + matched failure patterns."""
     from creature_lab.diagnosis import diagnose as run_diagnosis
 
-    trace = _load_spec(resolve_trace_path(path), EpisodeTrace)
-    creature = _load_creature_for_trace(path, creature_path)
-    task_spec = _load_task_for_trace(path, task)
+    trace = _load_spec(_resolve_trace_path(path, runs_dir), EpisodeTrace)
+    creature = _load_creature_for_trace(path, creature_path, runs_dir)
+    task_spec = _load_task_for_trace(path, task, runs_dir)
     result = run_diagnosis(trace, creature, task_spec)
+    if json_output:
+        _print_json(
+            {
+                "run_id": trace.run_id,
+                "creature": trace.creature_name,
+                "task": trace.task_name,
+                "metrics": result.metrics,
+                "patterns": result.patterns,
+                "explanations": result.explanations,
+                "suggestions": result.suggestions,
+            }
+        )
+        return
 
     table = Table(title=f"diagnosis: {trace.run_id!r} ({trace.creature_name!r})")
     table.add_column("signal")
@@ -726,7 +1021,7 @@ def diagnose(
         console.print(f"  {index}. {suggestion}")
 
 
-@app.command()
+@app.command(rich_help_panel="Replay And Debug")
 def view(
     path: Annotated[Path, typer.Argument(help="Path to a trace.json file or run directory.")],
     creature_path: Annotated[
@@ -738,14 +1033,17 @@ def view(
     task: Annotated[
         Path | None, typer.Option(help="Optional TaskSpec JSON to draw the target marker.")
     ] = None,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory used when resolving the `latest` alias.")
+    ] = DEFAULT_RUNS_DIR,
     fps: Annotated[float, typer.Option(help="Playback frames per second.")] = 30.0,
     port: Annotated[int, typer.Option(help="Port for the Viser server.")] = 8080,
     debug: Annotated[bool, typer.Option(help="Overlay CoM/root trails and a fall marker.")] = False,
 ) -> None:
     """Replay a saved trace in a Viser browser viewer (renders poses, no physics)."""
-    trace = _load_spec(resolve_trace_path(path), EpisodeTrace)
-    creature = _load_creature_for_trace(path, creature_path)
-    task_spec = _load_task_for_trace(path, task)
+    trace = _load_spec(_resolve_trace_path(path, runs_dir), EpisodeTrace)
+    creature = _load_creature_for_trace(path, creature_path, runs_dir)
+    task_spec = _load_task_for_trace(path, task, runs_dir)
 
     try:
         from creature_lab.viewers.viser_viewer import play_trace
@@ -761,19 +1059,22 @@ def view(
     play_trace(creature, trace, task=task_spec, fps=fps, port=port, debug=debug)
 
 
-@app.command()
+@app.command(rich_help_panel="Advanced")
 def compare(
     run_a: Annotated[Path, typer.Argument(help="First run directory (or trace.json).")],
     run_b: Annotated[Path, typer.Argument(help="Second run directory (or trace.json).")],
     gap: Annotated[float, typer.Option(help="Sideways spacing between the two creatures.")] = 1.0,
     fps: Annotated[float, typer.Option(help="Playback frames per second.")] = 30.0,
     port: Annotated[int, typer.Option(help="Port for the Viser server.")] = 8080,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory used when resolving bare run ids or `latest`.")
+    ] = DEFAULT_RUNS_DIR,
 ) -> None:
     """Replay two saved runs side by side in one Viser scene."""
-    trace_a = _load_spec(resolve_trace_path(run_a), EpisodeTrace)
-    trace_b = _load_spec(resolve_trace_path(run_b), EpisodeTrace)
-    creature_a = _load_creature_for_trace(run_a, None)
-    creature_b = _load_creature_for_trace(run_b, None)
+    trace_a = _load_spec(_resolve_trace_path(run_a, runs_dir), EpisodeTrace)
+    trace_b = _load_spec(_resolve_trace_path(run_b, runs_dir), EpisodeTrace)
+    creature_a = _load_creature_for_trace(run_a, None, runs_dir)
+    creature_b = _load_creature_for_trace(run_b, None, runs_dir)
 
     try:
         from creature_lab.viewers.viser_viewer import compare_traces
@@ -792,15 +1093,15 @@ def compare(
         trace_a,
         creature_b,
         trace_b,
-        task_a=_load_task_for_trace(run_a, None),
-        task_b=_load_task_for_trace(run_b, None),
+        task_a=_load_task_for_trace(run_a, None, runs_dir),
+        task_b=_load_task_for_trace(run_b, None, runs_dir),
         gap=gap,
         fps=fps,
         port=port,
     )
 
 
-@app.command()
+@app.command(rich_help_panel="Advanced")
 def plot(
     path: Annotated[Path, typer.Argument(help="Path to a run directory (or trace.json).")],
     metric: Annotated[
@@ -809,10 +1110,13 @@ def plot(
     out: Annotated[
         Path | None, typer.Option("--out", "-o", help="Save a PNG here (else open a window).")
     ] = None,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory used when resolving the `latest` alias.")
+    ] = DEFAULT_RUNS_DIR,
 ) -> None:
     """Plot a per-frame metric for a saved run."""
-    trace = _load_spec(resolve_trace_path(path), EpisodeTrace)
-    creature = _load_creature_for_trace(path, None)
+    trace = _load_spec(_resolve_trace_path(path, runs_dir), EpisodeTrace)
+    creature = _load_creature_for_trace(path, None, runs_dir)
 
     try:
         from creature_lab.viewers.plotting import plot_metric
@@ -831,23 +1135,35 @@ def plot(
         console.print(f"[green]saved[/green] {metric} plot -> {result}")
 
 
-@app.command()
+@app.command(rich_help_panel="Replay And Debug")
 def export(
     path: Annotated[Path, typer.Argument(help="Path to a trace.json file or run directory.")],
-    out: Annotated[Path, typer.Option("--out", "-o", help="Output .gif or .mp4 path.")],
+    out: Annotated[
+        Path | None, typer.Option("--out", "-o", help="Output .gif or .mp4 path.")
+    ] = None,
+    gif: Annotated[
+        Path | None, typer.Option("--gif", help="Output GIF path (alias for --out).")
+    ] = None,
     creature_path: Annotated[
         Path | None,
         typer.Option(
             "--creature", help="CreatureSpec JSON (defaults to creature.json in the run dir)."
         ),
     ] = None,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory used when resolving the `latest` alias.")
+    ] = DEFAULT_RUNS_DIR,
     fps: Annotated[float, typer.Option(help="Frames per second in the output.")] = 30.0,
     width: Annotated[int, typer.Option(help="Render width in pixels.")] = 640,
     height: Annotated[int, typer.Option(help="Render height in pixels.")] = 480,
 ) -> None:
     """Render a saved trace to a shareable GIF or MP4 (replays poses, no physics)."""
-    trace = _load_spec(resolve_trace_path(path), EpisodeTrace)
-    creature = _load_creature_for_trace(path, creature_path)
+    out_path = gif or out
+    if out_path is None:
+        console.print("[red]error:[/red] provide --out or --gif")
+        raise typer.Exit(code=2)
+    trace = _load_spec(_resolve_trace_path(path, runs_dir), EpisodeTrace)
+    creature = _load_creature_for_trace(path, creature_path, runs_dir)
 
     try:
         from creature_lab.backends.pybullet_backend import render_trace
@@ -866,8 +1182,8 @@ def export(
         raise typer.Exit(code=2) from exc
 
     frames = render_trace(creature, trace, width=width, height=height)
-    out_path = write_animation(frames, out, fps=fps)
-    console.print(f"[green]exported[/green] {len(frames)} frame(s) -> {out_path}")
+    saved_path = write_animation(frames, out_path, fps=fps)
+    console.print(f"[green]exported[/green] {len(frames)} frame(s) -> {saved_path}")
 
 
 def _write_creature(creature: CreatureSpec, out: Path) -> None:
@@ -880,8 +1196,132 @@ def _write_creature(creature: CreatureSpec, out: Path) -> None:
     )
 
 
+schema_app = typer.Typer(help="Export Creature Lab JSON Schemas.")
+app.add_typer(schema_app, name="schema", rich_help_panel="Advanced")
+
+
+def _write_schema(model: type[BaseModel], out: Path | None) -> None:
+    rendered = json.dumps(model.model_json_schema(), indent=2, sort_keys=True)
+    if out is None:
+        _write_stdout(rendered)
+        return
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(rendered)
+    console.print(f"[green]wrote[/green] {model.__name__} schema -> {out}")
+
+
+@schema_app.command("creature")
+def schema_creature(
+    out: Annotated[Path | None, typer.Option("--out", "-o", help="Write schema JSON here.")] = None,
+) -> None:
+    """Export the CreatureSpec JSON Schema."""
+    _write_schema(CreatureSpec, out)
+
+
+@schema_app.command("task")
+def schema_task(
+    out: Annotated[Path | None, typer.Option("--out", "-o", help="Write schema JSON here.")] = None,
+) -> None:
+    """Export the TaskSpec JSON Schema."""
+    _write_schema(TaskSpec, out)
+
+
+@schema_app.command("trace")
+def schema_trace(
+    out: Annotated[Path | None, typer.Option("--out", "-o", help="Write schema JSON here.")] = None,
+) -> None:
+    """Export the EpisodeTrace JSON Schema."""
+    _write_schema(EpisodeTrace, out)
+
+
+gallery_app = typer.Typer(help="Build static zoo gallery files.")
+app.add_typer(gallery_app, name="gallery", rich_help_panel="Start Here")
+
+
+def _gallery_failure_note(name: str, task_name: str) -> str:
+    if "humanoid" in name:
+        return "Balance and early falls are the first things to inspect."
+    if "damaged" in name or "recover" in task_name:
+        return "Compare pre-damage and post-damage movement in the report."
+    if task_name == "reach_target":
+        return "Check target progress and wasted joint motion."
+    return "Check forward displacement, contact balance, and motor limits."
+
+
+def _gallery_card(
+    name: str, task_name: str, baseline: dict[str, Any] | None, gif: str | None
+) -> str:
+    expected = baseline.get("best_score") if baseline else None
+    lines = [
+        f"# {name}",
+        "",
+        f"- Default task: `{task_name}`",
+        f"- Expected score: {'-' if expected is None else f'{expected:.4f}'}",
+        f"- Common failure mode: {_gallery_failure_note(name, task_name)}",
+        f"- Run: `uv run creature-lab zoo run {name}`",
+    ]
+    if gif is not None:
+        lines.append(f"- GIF: `{gif}`")
+    lines.append("")
+    return "\n".join(lines)
+
+
+@gallery_app.command("build")
+def gallery_build(
+    zoo: Annotated[
+        bool, typer.Option("--zoo", help="Build cards for packaged zoo creatures.")
+    ] = False,
+    out: Annotated[
+        Path, typer.Option("--out", "-o", help="Output directory for gallery files.")
+    ] = Path("docs/assets/zoo"),
+    media: Annotated[
+        bool, typer.Option("--media/--no-media", help="Also render one GIF per zoo creature.")
+    ] = True,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory to save gallery render runs under.")
+    ] = DEFAULT_RUNS_DIR,
+    width: Annotated[int, typer.Option(help="GIF render width in pixels.")] = 320,
+    height: Annotated[int, typer.Option(help="GIF render height in pixels.")] = 240,
+) -> None:
+    """Build local static cards, and optionally GIFs, for the Creature Zoo."""
+    if not zoo:
+        console.print("[red]error:[/red] use --zoo to build the packaged zoo gallery")
+        raise typer.Exit(code=2)
+
+    from creature_lab.zoo import default_task_name, list_zoo_creatures, zoo_baseline, zoo_creature
+
+    out.mkdir(parents=True, exist_ok=True)
+    cards: list[str] = []
+    for name in list_zoo_creatures():
+        task_name = default_task_name(name)
+        creature, task_spec = zoo_creature(name, task_name)
+        baseline = zoo_baseline(name, task_name)
+        gif_name: str | None = None
+        if media:
+            try:
+                from creature_lab.backends.pybullet_backend import render_trace
+                from creature_lab.viewers.video_exporter import write_animation
+            except ImportError as exc:
+                console.print(
+                    "[red]error:[/red] gallery media needs `uv sync --extra sim --extra export`."
+                )
+                raise typer.Exit(code=2) from exc
+            trace = _simulate(creature, task_spec)
+            save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
+            gif_path = out / f"{name}.gif"
+            write_animation(render_trace(creature, trace, width=width, height=height), gif_path)
+            gif_name = gif_path.name
+        card = _gallery_card(name, task_name, baseline, gif_name)
+        card_path = out / f"{name}.md"
+        card_path.write_text(card)
+        cards.append(f"- [{name}]({card_path.name})")
+
+    (out / "index.md").write_text("# Creature Zoo Gallery\n\n" + "\n".join(cards) + "\n")
+    console.print(f"[green]built[/green] {len(cards)} zoo gallery card(s) -> {out}")
+
+
 scaffold_app = typer.Typer(help="Generate creatures procedurally (no URDF/MJCF by hand).")
-app.add_typer(scaffold_app, name="scaffold")
+app.add_typer(scaffold_app, name="scaffold", rich_help_panel="Advanced")
 
 
 @scaffold_app.command("worm")
@@ -931,7 +1371,7 @@ def scaffold_humanoid(
     _write_creature(generate_humanoid(height=height, dof=dof), out)  # type: ignore[arg-type]
 
 
-@app.command("mirror-limb")
+@app.command("mirror-limb", rich_help_panel="Advanced")
 def mirror_limb_cmd(
     creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
     out: Annotated[Path, typer.Option("--out", "-o", help="Output CreatureSpec path.")],
@@ -952,13 +1392,30 @@ def mirror_limb_cmd(
 
 
 zoo_app = typer.Typer(help="Browse and run the curated Creature Zoo.")
-app.add_typer(zoo_app, name="zoo")
+app.add_typer(zoo_app, name="zoo", rich_help_panel="Start Here")
 
 
 @zoo_app.command("list")
-def zoo_list() -> None:
+def zoo_list(
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable zoo metadata.")
+    ] = False,
+) -> None:
     """List the built-in zoo creatures and their tasks."""
     from creature_lab.zoo import default_task_name, list_zoo_creatures, zoo_tasks
+
+    if json_output:
+        _print_json(
+            [
+                {
+                    "creature": name,
+                    "tasks": zoo_tasks(name),
+                    "default_task": default_task_name(name),
+                }
+                for name in list_zoo_creatures()
+            ]
+        )
+        return
 
     table = Table(title="Creature Zoo")
     table.add_column("creature")
@@ -981,6 +1438,9 @@ def zoo_run(
     runs_dir: Annotated[
         Path, typer.Option(help="Directory to save the episode trace under.")
     ] = DEFAULT_RUNS_DIR,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable run metadata.")
+    ] = False,
 ) -> None:
     """Run a zoo creature on one of its tasks and save the trace."""
     from creature_lab.zoo import zoo_creature
@@ -994,6 +1454,9 @@ def zoo_run(
     _check_inputs(creature, task_spec)
     trace = _simulate(creature, task_spec, gui=gui, seed=seed)
     run_dir = save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
+    if json_output:
+        _print_json(_saved_run_payload(creature, task_spec, trace, run_dir))
+        return
     console.print(
         f"[green]done[/green] {creature.name!r} on {task_spec.name!r}: "
         f"score={trace.score:.4f} ({len(trace.frames)} step(s)) -> {run_dir}"
@@ -1016,7 +1479,7 @@ def zoo_validate_all() -> None:
     console.print(f"[green]valid[/green] all {len(pairs)} zoo creature/task pair(s)")
 
 
-@app.command("export-urdf")
+@app.command("export-urdf", rich_help_panel="Advanced")
 def export_urdf_cmd(
     creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
     out: Annotated[Path, typer.Option("--out", "-o", help="Output .urdf path.")],
@@ -1029,7 +1492,7 @@ def export_urdf_cmd(
     console.print(f"[green]exported[/green] {creature.name!r} URDF -> {out}")
 
 
-@app.command("export-mjcf")
+@app.command("export-mjcf", rich_help_panel="Advanced")
 def export_mjcf_cmd(
     creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
     out: Annotated[Path, typer.Option("--out", "-o", help="Output .xml path.")],
@@ -1042,7 +1505,7 @@ def export_mjcf_cmd(
     console.print(f"[green]exported[/green] {creature.name!r} MJCF -> {out}")
 
 
-@app.command("import-urdf")
+@app.command("import-urdf", rich_help_panel="Advanced")
 def import_urdf_cmd(
     urdf_path: Annotated[Path, typer.Argument(help="Path to a .urdf file.")],
     out: Annotated[Path, typer.Option("--out", "-o", help="Output CreatureSpec path.")],

@@ -23,7 +23,7 @@ pybullet = pytest.importorskip("pybullet")  # the whole module needs the sim bac
 
 
 def _only_run_dir(runs_dir: Path) -> Path:
-    [run_dir] = list(runs_dir.iterdir())
+    [run_dir] = [path for path in runs_dir.iterdir() if path.is_dir()]
     return run_dir
 
 

@@ -35,7 +35,7 @@ def test_inspect_reports_summary(tmp_path):
         app, ["run", str(EXAMPLE), "--task", str(TASK), "--runs-dir", str(runs_dir)]
     )
     assert run.exit_code == 0, run.stdout
-    [run_dir] = list(runs_dir.iterdir())
+    [run_dir] = [path for path in runs_dir.iterdir() if path.is_dir()]
 
     result = runner.invoke(app, ["inspect", str(run_dir)])
     assert result.exit_code == 0, result.stdout
@@ -110,7 +110,7 @@ def test_run_saves_a_replayable_trace(tmp_path):
     assert result.exit_code == 0, result.stdout
     assert "score=" in result.stdout
 
-    [run_dir] = list(runs_dir.iterdir())
+    [run_dir] = [path for path in runs_dir.iterdir() if path.is_dir()]
     replay_result = runner.invoke(app, ["replay", str(run_dir)])
     assert replay_result.exit_code == 0, replay_result.stdout
     assert "tripod" in replay_result.stdout
@@ -143,7 +143,7 @@ def test_evolve_saves_best_creature(tmp_path):
     assert result.exit_code == 0, result.stdout
     assert "best" in result.stdout
 
-    [run_dir] = list(runs_dir.iterdir())
+    [run_dir] = [path for path in runs_dir.iterdir() if path.is_dir()]
     assert (run_dir / "creature.json").exists()
     assert (run_dir / "trace.json").exists()
 
@@ -157,7 +157,7 @@ def test_export_creates_gif(tmp_path):
     )
     assert run_result.exit_code == 0, run_result.stdout
 
-    [run_dir] = list(runs_dir.iterdir())
+    [run_dir] = [path for path in runs_dir.iterdir() if path.is_dir()]
     out = tmp_path / "clip.gif"
     result = runner.invoke(
         app, ["export", str(run_dir), "--out", str(out), "--width", "64", "--height", "48"]
