@@ -1,7 +1,7 @@
 [project]
 name = "creature-lab"
 version = "0.1.0"
-description = "Minimal, visual, backend-agnostic creature simulation lab."
+description = "Tiny local lab for designing, running, diagnosing, and improving modular robot-creatures from JSON."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -42,6 +42,12 @@ mujoco = [
 
 [project.scripts]
 creature-lab = "creature_lab.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/iodriller/Creature-Lab"
+Repository = "https://github.com/iodriller/Creature-Lab"
+Issues = "https://github.com/iodriller/Creature-Lab/issues"
+Documentation = "https://github.com/iodriller/Creature-Lab/tree/main/docs"
 
 [build-system]
 requires = ["hatchling"]
