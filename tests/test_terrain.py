@@ -6,6 +6,8 @@ import pytest
 
 from creature_lab.schema.task import TerrainSpec
 from creature_lab.terrain import (
+    DEFAULT_COLS,
+    DEFAULT_ROWS,
     describe_terrain,
     flatten_for_heightfield_api,
     height_at,
@@ -14,6 +16,12 @@ from creature_lab.terrain import (
     is_flat,
     normalized_heightfield_data,
 )
+
+
+def test_default_grid_is_square():
+    # flatten_for_heightfield_api's axis convention was only verified empirically for a
+    # square grid; terrain.py asserts this at import time, but this documents why.
+    assert DEFAULT_ROWS == DEFAULT_COLS
 
 
 def test_is_flat_only_for_plane():

@@ -51,6 +51,18 @@ the complete MVP.
   no indication of which terrain a run used.
 - `docs/KNOWN_ISSUES.md`: a living list of latent gaps and deliberate limitations found in
   review, so findings have a home instead of being re-discovered or lost.
+- **Self-contained archive heatmaps**: `archive show --html --task` now embeds per-cell
+  replay GIFs as `data:` URIs (matching the run report), instead of writing them to a
+  sibling directory the page depends on and breaks if moved.
+- **CI now wheel-tests the package**: builds the wheel, installs it into a fresh venv, and
+  runs `doctor` + `zoo run` against the installed package on every push/PR — the same check
+  Phase 5 previously only ran by hand.
+- `validate_episode_inputs` warns when a task's **target** lies outside the generated
+  terrain's finite extent on non-flat terrain — closes part of the "non-flat terrain has a
+  finite 6.4 m extent" known issue (the target-based case; open-ended locomotion tasks
+  can't be checked this way, since expected travel isn't derivable from the spec alone).
+- `terrain.py` now asserts its default grid is square at import time, since the
+  PyBullet/MuJoCo axis convention was only verified empirically for `rows == cols`.
 
 ### Fixed
 

@@ -17,6 +17,12 @@ DEFAULT_ROWS = 64
 DEFAULT_COLS = 64
 DEFAULT_CELL_SIZE = 0.1
 
+# flatten_for_heightfield_api's row/column convention was verified empirically against
+# both backends (a PyBullet raycast probe and a MuJoCo free-falling probe body) only for
+# a square grid — a non-square grid could reveal an axis swap that a square grid can't.
+# If this ever needs to change, re-run that verification before removing the assertion.
+assert DEFAULT_ROWS == DEFAULT_COLS, "non-square default terrain grid is unverified; see terrain.py"
+
 
 def is_flat(terrain: TerrainSpec) -> bool:
     """Whether this terrain is the simple infinite ground plane (no heightfield needed)."""

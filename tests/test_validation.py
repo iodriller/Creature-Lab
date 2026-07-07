@@ -70,3 +70,45 @@ def test_motor_amplitude_over_limit_warns():
     task = TaskSpec.model_validate({"name": "t", "duration": 1.0})
     warnings = validate_episode_inputs(creature, task)
     assert any("exceeding its limit" in w for w in warnings)
+
+
+def test_target_outside_non_flat_terrain_extent_warns():
+    task = TaskSpec.model_validate(
+        {
+            "name": "t",
+            "duration": 1.0,
+            "terrain": {"type": "slope", "slope_angle": 0.1},
+            "target": {"position": [1000.0, 0.0, 0.0]},
+            "reward": {"target_distance": 1.0},
+        }
+    )
+    warnings = validate_episode_inputs(_creature(), task)
+    assert any("outside the generated terrain" in w for w in warnings)
+
+
+def test_target_within_non_flat_terrain_extent_does_not_warn():
+    task = TaskSpec.model_validate(
+        {
+            "name": "t",
+            "duration": 1.0,
+            "terrain": {"type": "slope", "slope_angle": 0.1},
+            "target": {"position": [1.0, 0.0, 0.0]},
+            "reward": {"target_distance": 1.0},
+        }
+    )
+    warnings = validate_episode_inputs(_creature(), task)
+    assert not any("outside the generated terrain" in w for w in warnings)
+
+
+def test_target_outside_flat_terrain_extent_does_not_warn():
+    # Flat terrain has no finite extent, so this check doesn't apply there.
+    task = TaskSpec.model_validate(
+        {
+            "name": "t",
+            "duration": 1.0,
+            "target": {"position": [1000.0, 0.0, 0.0]},
+            "reward": {"target_distance": 1.0},
+        }
+    )
+    warnings = validate_episode_inputs(_creature(), task)
+    assert not any("outside the generated terrain" in w for w in warnings)

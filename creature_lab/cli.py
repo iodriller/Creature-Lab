@@ -806,6 +806,9 @@ def archive_show(
 
         cell_gifs: dict[str, str] = {}
         if task is not None:
+            import base64
+            import tempfile
+
             try:
                 from creature_lab.backends.pybullet_backend import render_trace
                 from creature_lab.viewers.video_exporter import write_animation
@@ -815,17 +818,19 @@ def archive_show(
                 )
                 raise typer.Exit(code=2) from exc
             task_spec = _load_spec(task, TaskSpec)
-            gif_dir = html_out.parent / f"{html_out.stem}_cells"
-            gif_dir.mkdir(parents=True, exist_ok=True)
-            for cell_key, entry in archive.items():
-                cell_creature = CreatureSpec.model_validate(entry["spec"])
-                trace = _simulate(cell_creature, task_spec)
-                gif_path = gif_dir / f"{cell_key.replace(',', '_')}.gif"
-                frames = render_trace(
-                    cell_creature, trace, task=task_spec, width=width, height=height
-                )
-                write_animation(frames, gif_path)
-                cell_gifs[cell_key] = f"{gif_dir.name}/{gif_path.name}"
+            # Embed as data: URIs (like the run report's GIF) so the page stays a single
+            # self-contained file instead of depending on a sibling directory of images.
+            with tempfile.TemporaryDirectory() as tmp:
+                for cell_key, entry in archive.items():
+                    cell_creature = CreatureSpec.model_validate(entry["spec"])
+                    trace = _simulate(cell_creature, task_spec)
+                    gif_path = Path(tmp) / f"{cell_key.replace(',', '_')}.gif"
+                    frames = render_trace(
+                        cell_creature, trace, task=task_spec, width=width, height=height
+                    )
+                    write_animation(frames, gif_path)
+                    encoded = base64.b64encode(gif_path.read_bytes()).decode("ascii")
+                    cell_gifs[cell_key] = f"data:image/gif;base64,{encoded}"
 
         html_out.parent.mkdir(parents=True, exist_ok=True)
         html_out.write_text(archive_to_html(archive, cell_gifs=cell_gifs))

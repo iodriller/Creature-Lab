@@ -317,6 +317,54 @@ def test_archive_show_and_export_cli(tmp_path):
     assert exported.parts
 
 
+def test_archive_show_html_with_task_embeds_gifs_as_data_uris(tmp_path):
+    pytest.importorskip("pybullet")
+    pytest.importorskip("imageio")
+    from typer.testing import CliRunner
+
+    from creature_lab.cli import app
+
+    runner = CliRunner()
+    runs_dir = tmp_path / "runs"
+    evolve_result = runner.invoke(
+        app,
+        [
+            "evolve",
+            "examples/quadruped.json",
+            "--task",
+            "examples/crawl_forward.json",
+            "--strategy",
+            "map_elites",
+            "--attempts",
+            "4",
+            "--runs-dir",
+            str(runs_dir),
+        ],
+    )
+    assert evolve_result.exit_code == 0, evolve_result.stdout
+    run_dir = next(p for p in runs_dir.iterdir() if p.is_dir())
+
+    html_out = tmp_path / "archive.html"
+    result = runner.invoke(
+        app,
+        [
+            "archive",
+            "show",
+            str(run_dir),
+            "--html",
+            str(html_out),
+            "--task",
+            "examples/crawl_forward.json",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    page = html_out.read_text()
+    assert "data:image/gif;base64," in page
+    assert "http://" not in page and "https://" not in page
+    # Self-contained: no sibling image directory or file should have been created.
+    assert not any(p.is_dir() and p.name.endswith("_cells") for p in tmp_path.iterdir())
+
+
 def test_archive_export_unknown_cell_errors(tmp_path):
     pytest.importorskip("pybullet")
     from typer.testing import CliRunner
