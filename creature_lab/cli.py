@@ -534,7 +534,11 @@ def evolve(
     )
     if result.archive:
         archive = {
-            f"{cell[0]},{cell[1]}": {"score": entry["score"], "features": list(entry["features"])}
+            f"{cell[0]},{cell[1]}": {
+                "score": entry["score"],
+                "features": list(entry["features"]),
+                "spec": entry["spec"].model_dump(mode="json"),
+            }
             for cell, entry in result.archive.items()
         }
         (run_dir / "archive.json").write_text(json.dumps(archive, indent=2))
@@ -742,6 +746,106 @@ def lineage(
             render(node["index"], depth + 1)
 
     render(None, 0)
+
+
+archive_app = typer.Typer(help="Inspect and export cells from a MAP-Elites archive.")
+app.add_typer(archive_app, name="archive", rich_help_panel="Advanced")
+
+
+def _load_archive(path: Path) -> dict[str, Any]:
+    archive_path = path / "archive.json" if path.is_dir() else path
+    if not archive_path.exists():
+        console.print(f"[red]error:[/red] no archive.json at {archive_path}")
+        raise typer.Exit(code=2)
+    return json.loads(archive_path.read_text())
+
+
+@archive_app.command("show")
+def archive_show(
+    path: Annotated[
+        Path, typer.Argument(help="Path to a map_elites evolve run directory (or archive.json).")
+    ],
+    html_out: Annotated[
+        Path | None,
+        typer.Option("--html", help="Write a visual heatmap instead of printing a table."),
+    ] = None,
+    task: Annotated[
+        Path | None,
+        typer.Option(help="TaskSpec JSON to render a replay GIF per cell (needs --html)."),
+    ] = None,
+    width: Annotated[int, typer.Option(help="Per-cell GIF width in pixels.")] = 160,
+    height: Annotated[int, typer.Option(help="Per-cell GIF height in pixels.")] = 120,
+) -> None:
+    """Show a MAP-Elites archive: a ranked table, or --html for a scored heatmap."""
+    archive = _load_archive(path)
+
+    if html_out is not None:
+        from creature_lab.reports_html import archive_to_html
+
+        cell_gifs: dict[str, str] = {}
+        if task is not None:
+            try:
+                from creature_lab.backends.pybullet_backend import render_trace
+                from creature_lab.viewers.video_exporter import write_animation
+            except ImportError as exc:
+                console.print(
+                    "[red]error:[/red] --task GIFs need `uv sync --extra sim --extra export`."
+                )
+                raise typer.Exit(code=2) from exc
+            task_spec = _load_spec(task, TaskSpec)
+            gif_dir = html_out.parent / f"{html_out.stem}_cells"
+            gif_dir.mkdir(parents=True, exist_ok=True)
+            for cell_key, entry in archive.items():
+                cell_creature = CreatureSpec.model_validate(entry["spec"])
+                trace = _simulate(cell_creature, task_spec)
+                gif_path = gif_dir / f"{cell_key.replace(',', '_')}.gif"
+                frames = render_trace(cell_creature, trace, width=width, height=height)
+                write_animation(frames, gif_path)
+                cell_gifs[cell_key] = f"{gif_dir.name}/{gif_path.name}"
+
+        html_out.parent.mkdir(parents=True, exist_ok=True)
+        html_out.write_text(archive_to_html(archive, cell_gifs=cell_gifs))
+        console.print(f"[green]wrote[/green] archive heatmap -> {html_out}")
+        return
+
+    table = Table(title=f"archive: {len(archive)} filled cell(s)")
+    table.add_column("cell")
+    table.add_column("score", justify="right")
+    table.add_column("features")
+    for cell_key, entry in sorted(archive.items(), key=lambda kv: -kv[1]["score"]):
+        features = ", ".join(f"{f:.3f}" for f in entry["features"])
+        table.add_row(cell_key, f"{entry['score']:.4f}", features)
+    console.print(table)
+
+
+@archive_app.command("export")
+def archive_export(
+    path: Annotated[
+        Path, typer.Argument(help="Path to a map_elites evolve run directory (or archive.json).")
+    ],
+    cell: Annotated[
+        str, typer.Option(help="Cell key as 'row,col' (see `archive show`), e.g. '3,2'.")
+    ],
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output CreatureSpec JSON path.")],
+) -> None:
+    """Export one MAP-Elites archive cell as a standalone, editable CreatureSpec JSON."""
+    archive = _load_archive(path)
+    entry = archive.get(cell)
+    if entry is None:
+        available = ", ".join(sorted(archive)) or "(none)"
+        console.print(f"[red]error:[/red] unknown cell {cell!r}; choose one of: {available}")
+        raise typer.Exit(code=2)
+    if "spec" not in entry:
+        console.print(
+            "[red]error:[/red] this archive.json has no stored spec "
+            "(from before `archive export` support); re-run `evolve --strategy map_elites`."
+        )
+        raise typer.Exit(code=2)
+
+    creature = CreatureSpec.model_validate(entry["spec"])
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(creature.model_dump_json(indent=2))
+    console.print(f"[green]exported[/green] cell {cell!r} (score={entry['score']:.4f}) -> {out}")
 
 
 @app.command(rich_help_panel="Run And Improve")

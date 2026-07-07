@@ -182,10 +182,111 @@ def test_evolve_map_elites_cli_writes_archive_and_lineage(tmp_path):
     assert (run_dir / "archive.json").exists()
     assert (run_dir / "lineage.json").exists()
 
+    import json
+
+    archive = json.loads((run_dir / "archive.json").read_text())
+    assert archive  # at least the seed cell is filled
+    first_entry = next(iter(archive.values()))
+    assert "spec" in first_entry  # archive export needs this
+
     # lineage command renders the tree without crashing.
     tree = runner.invoke(app, ["lineage", str(run_dir)])
     assert tree.exit_code == 0, tree.stdout
     assert "candidate" in tree.stdout
+
+
+def test_archive_show_and_export_cli(tmp_path):
+    pytest.importorskip("pybullet")
+    from typer.testing import CliRunner
+
+    from creature_lab.cli import app
+
+    runner = CliRunner()
+    runs_dir = tmp_path / "runs"
+    evolve_result = runner.invoke(
+        app,
+        [
+            "evolve",
+            "examples/quadruped.json",
+            "--task",
+            "examples/crawl_forward.json",
+            "--strategy",
+            "map_elites",
+            "--attempts",
+            "4",
+            "--runs-dir",
+            str(runs_dir),
+        ],
+    )
+    assert evolve_result.exit_code == 0, evolve_result.stdout
+    run_dir = next(p for p in runs_dir.iterdir() if p.is_dir())
+
+    show_result = runner.invoke(app, ["archive", "show", str(run_dir)])
+    assert show_result.exit_code == 0, show_result.stdout
+    assert "filled cell" in show_result.stdout
+
+    import json
+
+    archive = json.loads((run_dir / "archive.json").read_text())
+    cell_key = next(iter(archive))
+
+    html_out = tmp_path / "archive.html"
+    html_result = runner.invoke(app, ["archive", "show", str(run_dir), "--html", str(html_out)])
+    assert html_result.exit_code == 0, html_result.stdout
+    page = html_out.read_text()
+    assert "archive-cell" in page
+    assert "http://" not in page and "https://" not in page
+
+    export_out = tmp_path / "elite.json"
+    export_result = runner.invoke(
+        app, ["archive", "export", str(run_dir), "--cell", cell_key, "--out", str(export_out)]
+    )
+    assert export_result.exit_code == 0, export_result.stdout
+    from creature_lab.schema import CreatureSpec
+
+    exported = CreatureSpec.model_validate_json(export_out.read_text())
+    assert exported.parts
+
+
+def test_archive_export_unknown_cell_errors(tmp_path):
+    pytest.importorskip("pybullet")
+    from typer.testing import CliRunner
+
+    from creature_lab.cli import app
+
+    runner = CliRunner()
+    runs_dir = tmp_path / "runs"
+    runner.invoke(
+        app,
+        [
+            "evolve",
+            "examples/quadruped.json",
+            "--task",
+            "examples/crawl_forward.json",
+            "--strategy",
+            "map_elites",
+            "--attempts",
+            "2",
+            "--runs-dir",
+            str(runs_dir),
+        ],
+    )
+    run_dir = next(p for p in runs_dir.iterdir() if p.is_dir())
+
+    result = runner.invoke(
+        app,
+        [
+            "archive",
+            "export",
+            str(run_dir),
+            "--cell",
+            "99,99",
+            "--out",
+            str(tmp_path / "elite.json"),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "unknown cell" in result.stdout
 
     top = runner.invoke(app, ["lineage", str(run_dir), "--best", "2"])
     assert top.exit_code == 0, top.stdout

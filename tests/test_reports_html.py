@@ -6,6 +6,7 @@ import pytest
 
 from creature_lab.reports import build_comparison, build_report
 from creature_lab.reports_html import (
+    archive_to_html,
     comparison_to_html,
     gallery_card_html,
     gallery_index_html,
@@ -152,3 +153,33 @@ def test_gallery_index_html_wraps_cards():
 
     assert "card-a" in page and "card-b" in page
     assert "Creature Zoo Gallery" in page
+
+
+def _archive() -> dict:
+    return {
+        "0,0": {"score": 0.2, "features": [0.1, 0.5]},
+        "2,1": {"score": 0.8, "features": [0.9, 0.4]},
+    }
+
+
+def test_archive_to_html_renders_a_cell_per_entry_and_no_external_urls():
+    page = archive_to_html(_archive())
+
+    assert page.count("<td class='archive-cell'") == 2
+    assert "0.200" in page and "0.800" in page
+    assert "http://" not in page
+    assert "https://" not in page
+
+
+def test_archive_to_html_handles_an_empty_archive():
+    page = archive_to_html({})
+
+    assert "Archive is empty" in page
+
+
+def test_archive_to_html_embeds_cell_gifs_when_given():
+    page = archive_to_html(_archive(), cell_gifs={"2,1": "cells/2_1.gif"})
+
+    assert "cells/2_1.gif" in page
+    # The cell without a GIF still renders, just without an <img>.
+    assert page.count("<img") == 1

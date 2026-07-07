@@ -199,7 +199,17 @@ engines (skips cleanly if `mujoco` extra absent) and reports divergence; tests u
 
 ---
 
-## Phase 3 — Quality-diversity gallery (make MAP-Elites visible)
+## Phase 3 — Quality-diversity gallery (make MAP-Elites visible) ✅
+
+**Status (2026-07-07):** Shipped. `evolve --strategy map_elites` now persists each filled
+cell's `CreatureSpec` into `archive.json` (previously only score/features were saved — a
+gap found while implementing this phase). CLI: `archive show <run>` prints a ranked table,
+`--html` renders a red-to-green scored heatmap (`reports_html.archive_to_html`), and
+`--html --task <task.json>` additionally renders a replay GIF per cell. `archive export
+<run> --cell row,col --out spec.json` pulls any elite out as a standalone, editable
+`CreatureSpec` — verified round-trip: exported a real elite from a 60-attempt run and it
+validated cleanly with `creature-lab validate`. 8 new tests; full suite green
+(301 passing), ruff clean.
 
 **Why:** `evolve --strategy map_elites` already fills a behavior archive (`archive.json`),
 but there is no way to *see* the diversity — the most compelling output of QD search is the

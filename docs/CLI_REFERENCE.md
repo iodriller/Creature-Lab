@@ -67,6 +67,8 @@ uv run creature-lab bench --zoo --task crawl_forward --attempts 3 --out runs/ben
 uv run creature-lab schema creature --out docs/schemas/creature.schema.json
 uv run creature-lab gallery build --zoo --out docs/assets/zoo --no-media
 uv run creature-lab lineage runs/<evolve-run-id>
+uv run creature-lab archive show runs/<map-elites-run-id> --html archive.html
+uv run creature-lab archive export runs/<map-elites-run-id> --cell 3,2 --out elite.json
 uv run creature-lab robustness runs/<run-id> --trials 10
 uv run creature-lab sim2sim runs/<run-id>
 uv run creature-lab doctor
@@ -76,6 +78,10 @@ uv run creature-lab version
 These commands are useful for authoring, interoperability, run comparison, diagnostics, and
 environment checks. They are intentionally outside the first-run path.
 
+- `archive show` (only useful after `evolve --strategy map_elites`) prints the filled
+  behaviour cells as a table, or `--html` renders a scored heatmap; add `--task` to embed a
+  replay GIF per cell. `archive export --cell row,col` pulls one elite out as a standalone,
+  editable `CreatureSpec` JSON.
 - `robustness` re-simulates a creature/task under small seeded mass/friction perturbations
   and reports the score mean/std/fail-rate — a wide spread means the gait only works for the
   exact recorded parameters. Add `--save` to write a reportable run (`report <dir>` then

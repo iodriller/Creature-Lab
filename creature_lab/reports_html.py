@@ -458,3 +458,77 @@ def comparison_to_html(
 </body>
 </html>
 """
+
+
+_ARCHIVE_STYLE = """
+.archive-grid { border-collapse: collapse; }
+.archive-cell {
+  text-align: center; padding: 6px; border-radius: 4px; color: #111;
+  font-size: 0.8rem; min-width: 2.5rem;
+}
+.archive-cell img { display: block; max-width: 120px; margin: 0 auto 2px auto; }
+.archive-empty { background: transparent; }
+"""
+
+
+def _archive_grid_html(archive: dict[str, dict], cell_gifs: dict[str, str]) -> str:
+    """The heatmap ``<table>`` fragment only (used by ``archive_to_html``)."""
+    if not archive:
+        return "<p class='meta'>Archive is empty.</p>"
+
+    cells: dict[tuple[int, int], dict] = {}
+    max_row = max_col = 0
+    for key, entry in archive.items():
+        row_str, col_str = key.split(",")
+        row, col = int(row_str), int(col_str)
+        cells[(row, col)] = entry
+        max_row, max_col = max(max_row, row), max(max_col, col)
+
+    scores = [entry["score"] for entry in archive.values()]
+    lo, hi = min(scores), max(scores)
+    span = max(hi - lo, 1e-9)
+
+    def cell_html(row: int, col: int) -> str:
+        entry = cells.get((row, col))
+        if entry is None:
+            return "<td class='archive-empty'>&nbsp;</td>"
+        hue = 120 * (entry["score"] - lo) / span  # red (low) -> green (high)
+        key = f"{row},{col}"
+        gif = cell_gifs.get(key)
+        media = f"<img src='{_escape(gif)}' alt='cell {key}' />" if gif else ""
+        return (
+            f"<td class='archive-cell' style='background:hsl({hue:.0f}, 65%, 45%)' "
+            f"title='cell {key}'>{media}<div>{entry['score']:.3f}</div></td>"
+        )
+
+    rows_html = "".join(
+        f"<tr>{''.join(cell_html(row, col) for col in range(max_col + 1))}</tr>"
+        for row in range(max_row + 1)
+    )
+    return f"<table class='archive-grid'><tbody>{rows_html}</tbody></table>"
+
+
+def archive_to_html(archive: dict[str, dict], *, cell_gifs: dict[str, str] | None = None) -> str:
+    """Render a MAP-Elites ``archive.json`` as a scored heatmap, one page.
+
+    Each filled cell is colored by its score (red=low, green=high) and shows the score
+    value; pass ``cell_gifs`` (cell key -> relative GIF path) to also show a per-cell
+    replay thumbnail, e.g. from ``archive show --html --task``.
+    """
+    grid_html = _archive_grid_html(archive, cell_gifs or {})
+    filled = len(archive)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Creature Lab MAP-Elites archive</title>
+<style>{_STYLE}{_ARCHIVE_STYLE}</style>
+</head>
+<body>
+<h1>MAP-Elites Archive</h1>
+<p class="meta">{filled} filled behaviour cell(s). Each cell is the best creature found
+for its (forward displacement, gait symmetry) niche.</p>
+{grid_html}
+</body>
+</html>
+"""
