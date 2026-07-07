@@ -9,6 +9,7 @@ from creature_lab.zoo import (
     default_task_name,
     list_zoo_creatures,
     validate_all,
+    zoo_baseline,
     zoo_creature,
     zoo_tasks,
 )
@@ -42,6 +43,16 @@ def test_damaged_quadruped_task_targets_a_real_part():
     creature, task = zoo_creature("damaged_quadruped")
     assert task.damage_event is not None
     assert task.damage_event.part_id in {part.id for part in creature.parts}
+
+
+@pytest.mark.parametrize("task_name", ["slope_climb", "step_over", "gap_cross"])
+def test_quadruped_terrain_tasks_have_a_calibrated_baseline(task_name):
+    creature, task = zoo_creature("quadruped", task_name)
+    assert task.terrain.type != "plane"
+
+    baseline = zoo_baseline("quadruped", task_name)
+    assert baseline is not None
+    assert baseline["best_score"] > 0
 
 
 def test_zoo_creature_unknown_name_raises():

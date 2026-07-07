@@ -130,6 +130,46 @@ def test_reset_reruns_from_the_start(backend):
     assert second_first_frame.t < first[-1].t
 
 
+@pytest.mark.parametrize(
+    "terrain",
+    [
+        {"type": "slope", "slope_angle": 0.15},
+        {"type": "steps", "step_height": 0.05, "step_length": 0.4},
+        {"type": "gaps", "gap_width": 0.2, "gap_period": 1.0},
+        {"type": "rough", "roughness": 0.03, "seed": 1},
+    ],
+)
+def test_non_flat_terrain_produces_finite_frames(backend, terrain):
+    creature = CreatureSpec.model_validate(TRIPOD)
+    task = TaskSpec.model_validate(
+        {"name": "t", "duration": 0.5, "timestep": 1 / 60, "terrain": terrain}
+    )
+
+    frames = _run_episode(backend, creature, task)
+
+    for frame in frames:
+        for pose in frame.parts.values():
+            assert all(math.isfinite(v) for v in pose.position)
+
+
+def test_gaps_terrain_keeps_a_solid_start_platform(backend):
+    creature = CreatureSpec.model_validate(TRIPOD)
+    task = TaskSpec.model_validate(
+        {
+            "name": "t",
+            "duration": 1.0,
+            "timestep": 1 / 60,
+            "terrain": {"type": "gaps", "gap_width": 0.2, "gap_period": 1.0},
+        }
+    )
+
+    frames = _run_episode(backend, creature, task)
+
+    # A creature spawning at the origin must land on the safe platform, not fall forever.
+    final_z = min(pose.position[2] for pose in frames[-1].parts.values())
+    assert final_z > -1.0
+
+
 def test_backend_satisfies_protocol():
     from creature_lab.backends.base import SimBackend
     from creature_lab.backends.pybullet_backend import PyBulletBackend

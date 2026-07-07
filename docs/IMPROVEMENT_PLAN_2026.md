@@ -132,7 +132,20 @@ diagnosis, overlays math, GIF/plot export) *already exists* — it just isn't co
 
 ---
 
-## Phase 1 — Terrain library (physical depth, not new surface)
+## Phase 1 — Terrain library (physical depth, not new surface) ✅
+
+**Status (2026-07-07):** Shipped. `TerrainSpec` gained `slope`/`steps`/`gaps`/`rough` types;
+`creature_lab/terrain.py` generates a deterministic, seeded heightfield shared by both
+backends (`heightfield_grid`, `heightfield_range`, `normalized_heightfield_data`,
+`flatten_for_heightfield_api`). PyBullet builds a `GEOM_HEIGHTFIELD` body; MuJoCo builds a
+`<hfield>` asset and fills `model.hfield_data` at runtime from the same grid. Both engines
+turned out to (a) auto-recenter/reindex heightfield data in ways their docs don't state
+plainly and (b) share the same axis convention — verified empirically with a raycast probe
+(PyBullet) and a free-falling probe body (MuJoCo) before trusting the physics. `gaps`
+terrain keeps a solid platform around the origin so a creature always spawns on ground.
+Added three zoo tasks (`slope_climb`, `step_over`, `gap_cross`) under `quadruped` with
+measured baselines. 32 new tests (`test_terrain.py` + backend/MJCF/zoo additions); full
+suite green (284 passing), ruff clean.
 
 **Why:** RoboMorph's headline result is that *terrain* drives morphology — different ground
 produces wheeled quads, hexapods, etc. Creature Lab's tasks today are mostly flat-ground.

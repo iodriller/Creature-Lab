@@ -30,6 +30,13 @@ The repo now includes a small local challenge pack using existing simulator feat
 - `push_recovery`: stay useful after a lateral impulse.
 - `reach_target`: reduce distance to a target sphere.
 - `stability_hold`: avoid falling without forward-distance reward.
+- `slope_climb` (quadruped): move along +x up a fixed incline (`terrain.type: slope`).
+- `step_over` (quadruped): move along +x over a staircase (`terrain.type: steps`).
+- `gap_cross` (quadruped): move along +x across periodic gaps, past a solid starting
+  platform (`terrain.type: gaps`).
+
+See [Task Spec](TASK_SPEC.md) for the full terrain field reference (`slope`, `steps`,
+`gaps`, `rough`) — implemented as a shared, deterministic heightfield on both backends.
 
 List exact creature/task availability with:
 

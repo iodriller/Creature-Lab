@@ -1,0 +1,14 @@
+{
+  "creature": "quadruped",
+  "task": "gap_cross",
+  "backend": "pybullet api 202010061",
+  "best_score": 0.6875,
+  "score_summary": {
+    "forward": 0.6875,
+    "target": 0.0,
+    "energy": -0.0,
+    "fall": 0.0,
+    "total": 0.6875
+  },
+  "note": "open-loop sinusoid controller baseline; the solid start platform gives room before the first gap"
+}

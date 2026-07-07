@@ -19,6 +19,7 @@ from creature_lab.schema import CreatureSpec, PartPose, TaskSpec
 from creature_lab.schema.creature import JointType
 from creature_lab.schema.trace import ContactSpec, FrameState
 from creature_lab.scoring import score_components
+from creature_lab.terrain import is_flat, normalized_heightfield_data
 
 
 def backend_version() -> str:
@@ -50,8 +51,12 @@ class MuJoCoBackend:
     def build(self, creature: CreatureSpec, task: TaskSpec) -> None:
         self._creature = creature
         self._task = task
-        xml = export_mjcf(creature, friction=task.terrain.friction, timestep=task.timestep)
+        xml = export_mjcf(
+            creature, friction=task.terrain.friction, timestep=task.timestep, terrain=task.terrain
+        )
         self._model = mujoco.MjModel.from_xml_string(xml)
+        if not is_flat(task.terrain):
+            self._model.hfield_data[:] = normalized_heightfield_data(task.terrain)
         self._data = mujoco.MjData(self._model)
 
         child_ids = {joint.child for joint in creature.joints}

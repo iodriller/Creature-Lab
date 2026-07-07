@@ -17,6 +17,15 @@ from creature_lab.schema import CreatureSpec, PartPose, PartSpec, ShapeType, Tas
 from creature_lab.schema.creature import JointType
 from creature_lab.schema.trace import ContactSpec, EpisodeTrace, FrameState
 from creature_lab.scoring import score_components
+from creature_lab.terrain import (
+    DEFAULT_CELL_SIZE,
+    DEFAULT_COLS,
+    DEFAULT_ROWS,
+    flatten_for_heightfield_api,
+    heightfield_grid,
+    heightfield_range,
+    is_flat,
+)
 
 
 def backend_version() -> str:
@@ -53,6 +62,36 @@ def _visual_geometry(part: PartSpec) -> tuple[int, dict]:
     raise ValueError(f"unsupported shape {part.shape!r}")
 
 
+def _build_ground(task: TaskSpec, client: int) -> int:
+    """Load the flat plane, or build a heightfield from ``creature_lab.terrain``."""
+    if is_flat(task.terrain):
+        ground_id = pybullet.loadURDF("plane.urdf", physicsClientId=client)
+    else:
+        grid = heightfield_grid(task.terrain)
+        # PyBullet auto-recenters heightfield data around z=0 — offsetting the body
+        # by the data's midpoint cancels that so raw grid heights are world heights.
+        flat_heights = flatten_for_heightfield_api(grid)
+        lo, hi = heightfield_range(task.terrain)
+        shape = pybullet.createCollisionShape(
+            shapeType=pybullet.GEOM_HEIGHTFIELD,
+            meshScale=[DEFAULT_CELL_SIZE, DEFAULT_CELL_SIZE, 1.0],
+            heightfieldData=flat_heights,
+            numHeightfieldRows=DEFAULT_ROWS,
+            numHeightfieldColumns=DEFAULT_COLS,
+            physicsClientId=client,
+        )
+        ground_id = pybullet.createMultiBody(
+            baseMass=0,
+            baseCollisionShapeIndex=shape,
+            basePosition=[0, 0, (lo + hi) / 2],
+            physicsClientId=client,
+        )
+    pybullet.changeDynamics(
+        ground_id, -1, lateralFriction=task.terrain.friction, physicsClientId=client
+    )
+    return ground_id
+
+
 class PyBulletBackend:
     """Builds a creature as a single PyBullet multi-body and steps it."""
 
@@ -80,11 +119,7 @@ class PyBulletBackend:
         self._task = task
         pybullet.resetSimulation(physicsClientId=self._client)
         pybullet.setGravity(0, 0, -9.81, physicsClientId=self._client)
-        plane_id = pybullet.loadURDF("plane.urdf", physicsClientId=self._client)
-        pybullet.changeDynamics(
-            plane_id, -1, lateralFriction=task.terrain.friction, physicsClientId=self._client
-        )
-        self._plane_id = plane_id
+        self._plane_id = _build_ground(task, self._client)
         self._build_body(creature)
         self._t = 0.0
         self._energy = 0.0
