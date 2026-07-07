@@ -128,3 +128,79 @@ def test_render_is_driven_by_recorded_part_poses_not_joint_angles():
     assert len(images) == 3
     assert images[0].shape == (48, 64, 3)
     assert images[1].any()  # the creature is in view and drawn
+
+
+def test_render_trace_draws_actual_terrain_not_a_flat_floor():
+    # Regression test: a replay of a non-flat-terrain run must show that terrain, not a
+    # flat floor the creature appears to float above or sink into.
+    pytest.importorskip("pybullet")
+    from creature_lab.backends.pybullet_backend import render_trace
+    from creature_lab.schema import CreatureSpec, EpisodeTrace, TaskSpec
+
+    creature = CreatureSpec.model_validate(
+        {
+            "name": "still",
+            "parts": [{"id": "a", "shape": "box", "size": [0.3, 0.3, 0.3], "mass": 1.0}],
+        }
+    )
+    trace = EpisodeTrace.model_validate(
+        {
+            "run_id": "r",
+            "creature_name": "still",
+            "task_name": "t",
+            "backend": "pybullet",
+            "score": 0.0,
+            "frames": [{"t": 0.0, "parts": {"a": {"position": [0.0, 0.0, 3.0]}}, "score": 0.0}],
+        }
+    )
+    # A camera looking straight down captures mostly ground, not the small creature,
+    # so a terrain-shape difference dominates the image.
+    kwargs = dict(width=200, height=200, camera_distance=8.0, camera_pitch=-89, camera_yaw=0)
+
+    flat_task = TaskSpec.model_validate({"name": "t", "duration": 1.0})
+    gaps_task = TaskSpec.model_validate(
+        {
+            "name": "t",
+            "duration": 1.0,
+            "terrain": {"type": "gaps", "gap_width": 0.4, "gap_period": 0.8},
+        }
+    )
+    flat_images = render_trace(creature, trace, task=flat_task, **kwargs)
+    gaps_images = render_trace(creature, trace, task=gaps_task, **kwargs)
+
+    diff = np.abs(flat_images[0].astype(int) - gaps_images[0].astype(int))
+    assert (diff.sum(axis=-1) > 10).mean() > 0.5  # most pixels differ
+
+    # is_flat(terrain) plane still renders identically regardless of the `task` param.
+    default_images = render_trace(creature, trace, task=None, **kwargs)
+    assert np.array_equal(flat_images[0], default_images[0])
+
+
+def test_render_trace_flat_terrain_matches_no_task_given():
+    # A TerrainSpec() (plane) explicitly passed must render identically to task=None,
+    # since both take the "flat plane" branch.
+    pytest.importorskip("pybullet")
+    from creature_lab.backends.pybullet_backend import render_trace
+    from creature_lab.schema import CreatureSpec, EpisodeTrace, TaskSpec
+
+    creature = CreatureSpec.model_validate(
+        {
+            "name": "still",
+            "parts": [{"id": "a", "shape": "box", "size": [0.3, 0.3, 0.3], "mass": 1.0}],
+        }
+    )
+    trace = EpisodeTrace.model_validate(
+        {
+            "run_id": "r",
+            "creature_name": "still",
+            "task_name": "t",
+            "backend": "pybullet",
+            "score": 0.0,
+            "frames": [{"t": 0.0, "parts": {"a": {"position": [0.0, 0.0, 1.0]}}, "score": 0.0}],
+        }
+    )
+    flat_task = TaskSpec.model_validate({"name": "t", "duration": 1.0})
+
+    with_task = render_trace(creature, trace, task=flat_task, width=64, height=48)
+    without_task = render_trace(creature, trace, task=None, width=64, height=48)
+    assert np.array_equal(with_task[0], without_task[0])

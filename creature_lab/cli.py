@@ -821,7 +821,9 @@ def archive_show(
                 cell_creature = CreatureSpec.model_validate(entry["spec"])
                 trace = _simulate(cell_creature, task_spec)
                 gif_path = gif_dir / f"{cell_key.replace(',', '_')}.gif"
-                frames = render_trace(cell_creature, trace, width=width, height=height)
+                frames = render_trace(
+                    cell_creature, trace, task=task_spec, width=width, height=height
+                )
                 write_animation(frames, gif_path)
                 cell_gifs[cell_key] = f"{gif_dir.name}/{gif_path.name}"
 
@@ -1082,7 +1084,7 @@ def report(
 
     try:
         if html_out is not None:
-            data, trace, creature = build_report_bundle(path, runs_dir=runs_dir)
+            data, trace, creature, task_spec = build_report_bundle(path, runs_dir=runs_dir)
         else:
             data = build_report(path, runs_dir=runs_dir)
     except FileNotFoundError as exc:
@@ -1093,7 +1095,7 @@ def report(
         from creature_lab.reports_html import report_to_html
 
         html_out.parent.mkdir(parents=True, exist_ok=True)
-        html_out.write_text(report_to_html(data, trace, creature))
+        html_out.write_text(report_to_html(data, trace, creature, task_spec))
         console.print(f"[green]wrote[/green] HTML report -> {html_out}")
 
     rendered = (
@@ -1236,8 +1238,8 @@ def compare(
         from creature_lab.reports_html import comparison_to_html
 
         try:
-            report_a, trace_a, creature_a = build_report_bundle(run_a, runs_dir=runs_dir)
-            report_b, trace_b, creature_b = build_report_bundle(run_b, runs_dir=runs_dir)
+            report_a, trace_a, creature_a, _task_a = build_report_bundle(run_a, runs_dir=runs_dir)
+            report_b, trace_b, creature_b, _task_b = build_report_bundle(run_b, runs_dir=runs_dir)
         except FileNotFoundError as exc:
             console.print(f"[red]error:[/red] {exc}")
             raise typer.Exit(code=2) from exc
@@ -1529,6 +1531,7 @@ def export(
         raise typer.Exit(code=2)
     trace = _load_spec(_resolve_trace_path(path, runs_dir), EpisodeTrace)
     creature = _load_creature_for_trace(path, creature_path, runs_dir)
+    task_spec = _load_task_for_trace(path, None, runs_dir)
 
     try:
         from creature_lab.backends.pybullet_backend import render_trace
@@ -1546,7 +1549,7 @@ def export(
         )
         raise typer.Exit(code=2) from exc
 
-    frames = render_trace(creature, trace, width=width, height=height)
+    frames = render_trace(creature, trace, task=task_spec, width=width, height=height)
     saved_path = write_animation(frames, out_path, fps=fps)
     console.print(f"[green]exported[/green] {len(frames)} frame(s) -> {saved_path}")
 
@@ -1678,7 +1681,8 @@ def gallery_build(
             save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
             current_score = trace.score
             gif_path = out / f"{name}.gif"
-            write_animation(render_trace(creature, trace, width=width, height=height), gif_path)
+            frames = render_trace(creature, trace, task=task_spec, width=width, height=height)
+            write_animation(frames, gif_path)
             gif_name = gif_path.name
         card = _gallery_card(name, task_name, baseline, gif_name)
         card_path = out / f"{name}.md"

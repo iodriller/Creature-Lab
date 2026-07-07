@@ -95,6 +95,30 @@ def flatten_for_heightfield_api(grid: list[list[float]]) -> list[float]:
     return [grid[r][c] for c in range(cols) for r in range(rows)]
 
 
+def height_at(
+    terrain: TerrainSpec,
+    x: float,
+    y: float,
+    *,
+    rows: int = DEFAULT_ROWS,
+    cols: int = DEFAULT_COLS,
+    cell_size: float = DEFAULT_CELL_SIZE,
+) -> float:
+    """Nearest-cell terrain height (m) at world position ``(x, y)``; ``0.0`` if flat.
+
+    For visual overlays (e.g. drawing a point on the ground) — not precise enough for
+    physics, which is why the backends use the full grid instead.
+    """
+    if is_flat(terrain):
+        return 0.0
+    grid = heightfield_grid(terrain, rows=rows, cols=cols, cell_size=cell_size)
+    x0 = -(rows * cell_size) / 2
+    y0 = -(cols * cell_size) / 2
+    r = min(max(round((x - x0) / cell_size), 0), rows - 1)
+    c = min(max(round((y - y0) / cell_size), 0), cols - 1)
+    return grid[r][c]
+
+
 def heightfield_range(
     terrain: TerrainSpec,
     *,

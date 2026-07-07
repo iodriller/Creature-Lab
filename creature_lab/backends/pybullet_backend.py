@@ -476,6 +476,7 @@ def render_trace(
     creature: CreatureSpec,
     trace: EpisodeTrace,
     *,
+    task: TaskSpec | None = None,
     width: int = 640,
     height: int = 480,
     fov: float = 60.0,
@@ -490,6 +491,10 @@ def render_trace(
     export is faithful to the trace rather than re-deriving link poses from joint
     angles (which deviates from the recorded dynamics). Returns a list of
     ``(height, width, 3)`` uint8 numpy arrays.
+
+    ``task`` draws the actual terrain shape (slope/steps/gaps/rough) instead of a flat
+    plane when its ``terrain`` is non-flat — without it, a replay of a non-flat-terrain
+    run would misleadingly show the creature floating above/sinking into a flat floor.
     """
     import numpy as np
 
@@ -501,7 +506,10 @@ def render_trace(
     frames: list = []
     try:
         pybullet.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=client)
-        pybullet.loadURDF("plane.urdf", physicsClientId=client)  # visual ground reference
+        if task is not None and not is_flat(task.terrain):
+            _build_ground(task, client)  # visual ground reference (matches the real terrain)
+        else:
+            pybullet.loadURDF("plane.urdf", physicsClientId=client)  # visual ground reference
 
         # One static (mass-0) visual body per part; we just move them each frame.
         part_bodies: dict[str, int] = {}

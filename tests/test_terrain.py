@@ -7,6 +7,7 @@ import pytest
 from creature_lab.schema.task import TerrainSpec
 from creature_lab.terrain import (
     flatten_for_heightfield_api,
+    height_at,
     heightfield_grid,
     heightfield_range,
     is_flat,
@@ -94,3 +95,23 @@ def test_normalized_heightfield_data_is_constant_for_a_degenerate_grid():
     terrain = TerrainSpec(type="slope", slope_angle=0.0)
     data = normalized_heightfield_data(terrain, rows=4, cols=4)
     assert data == [0.0] * 16
+
+
+def test_height_at_is_zero_for_flat_terrain():
+    assert height_at(TerrainSpec(), 3.0, -2.0) == 0.0
+
+
+def test_height_at_matches_slope_formula():
+    import math
+
+    terrain = TerrainSpec(type="slope", slope_angle=0.3)
+    # Nearest-cell lookup, so allow one cell's worth of tolerance (default cell_size=0.1).
+    assert height_at(terrain, 2.0, 0.0) == pytest.approx(2.0 * math.tan(0.3), abs=0.05)
+
+
+def test_height_at_clamps_out_of_range_coordinates():
+    terrain = TerrainSpec(type="slope", slope_angle=0.2)
+    # Far outside the 6.4m grid extent; must clamp to an edge cell, not raise or wrap.
+    far = height_at(terrain, 1000.0, 1000.0)
+    edge = height_at(terrain, 3.15, 0.0)
+    assert far == edge

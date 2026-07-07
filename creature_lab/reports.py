@@ -167,10 +167,10 @@ def build_report(path: Path, runs_dir: Path = DEFAULT_RUNS_DIR) -> dict[str, Any
 
 def build_report_bundle(
     path: Path, runs_dir: Path = DEFAULT_RUNS_DIR
-) -> tuple[dict[str, Any], EpisodeTrace, CreatureSpec | None]:
-    """Report dict plus the raw trace/creature, for renderers that need series data (HTML)."""
-    _, creature, _, trace = _load_artifacts(path, runs_dir)
-    return build_report(path, runs_dir=runs_dir), trace, creature
+) -> tuple[dict[str, Any], EpisodeTrace, CreatureSpec | None, TaskSpec | None]:
+    """Report dict plus the raw trace/creature/task, for renderers that need them (HTML)."""
+    _, creature, task, trace = _load_artifacts(path, runs_dir)
+    return build_report(path, runs_dir=runs_dir), trace, creature, task
 
 
 def build_comparison(report_a: dict[str, Any], report_b: dict[str, Any]) -> dict[str, Any]:

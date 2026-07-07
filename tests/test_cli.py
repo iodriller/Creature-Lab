@@ -164,3 +164,33 @@ def test_export_creates_gif(tmp_path):
     )
     assert result.exit_code == 0, result.stdout
     assert out.exists() and out.stat().st_size > 0
+
+
+def test_export_reads_terrain_from_the_saved_task(tmp_path):
+    # CLI wiring smoke test: `export` reads task.json from the run dir and passes it
+    # through to render_trace, so a non-flat-terrain run doesn't render a flat floor.
+    pytest.importorskip("pybullet")
+    pytest.importorskip("imageio")
+    runs_dir = tmp_path / "runs"
+    run_result = runner.invoke(
+        app,
+        [
+            "zoo",
+            "run",
+            "quadruped",
+            "--task",
+            "slope_climb",
+            "--runs-dir",
+            str(runs_dir),
+        ],
+    )
+    assert run_result.exit_code == 0, run_result.stdout
+
+    [run_dir] = [path for path in runs_dir.iterdir() if path.is_dir()]
+    assert (run_dir / "task.json").exists()
+    out = tmp_path / "clip.gif"
+    result = runner.invoke(
+        app, ["export", str(run_dir), "--out", str(out), "--width", "64", "--height", "48"]
+    )
+    assert result.exit_code == 0, result.stdout
+    assert out.exists() and out.stat().st_size > 0

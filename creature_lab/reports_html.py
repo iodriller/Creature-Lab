@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from creature_lab.schema import CreatureSpec, EpisodeTrace
+from creature_lab.schema import CreatureSpec, EpisodeTrace, TaskSpec
 
 _STYLE = """
 :root { color-scheme: light dark; }
@@ -145,7 +145,12 @@ def _score_bar_html(component_scores: dict[str, float]) -> str:
 
 
 def _gif_data_uri(
-    creature: CreatureSpec, trace: EpisodeTrace, *, width: int, height: int
+    creature: CreatureSpec,
+    trace: EpisodeTrace,
+    *,
+    task: TaskSpec | None = None,
+    width: int,
+    height: int,
 ) -> str | None:
     """Best-effort inline GIF preview; returns None if the sim/export extras are absent."""
     try:
@@ -153,7 +158,7 @@ def _gif_data_uri(
         from creature_lab.viewers.video_exporter import write_animation
     except ImportError:
         return None
-    frames = render_trace(creature, trace, width=width, height=height)
+    frames = render_trace(creature, trace, task=task, width=width, height=height)
     with tempfile.TemporaryDirectory() as tmp:
         gif_path = write_animation(frames, Path(tmp) / "preview.gif")
         encoded = base64.b64encode(gif_path.read_bytes()).decode("ascii")
@@ -195,18 +200,23 @@ def report_to_html(
     report: dict[str, Any],
     trace: EpisodeTrace,
     creature: CreatureSpec | None = None,
+    task: TaskSpec | None = None,
     *,
     embed_media: bool = True,
     media_width: int = 320,
     media_height: int = 240,
 ) -> str:
-    """Render a ``build_report`` dict as a single self-contained HTML page."""
+    """Render a ``build_report`` dict as a single self-contained HTML page.
+
+    ``task`` (when its terrain is non-flat) makes the embedded GIF preview draw the
+    actual terrain shape instead of a flat floor.
+    """
     creature_info, task_info, backend = report["creature"], report["task"], report["backend"]
     summary, diagnosis = report["summary"], report["diagnosis"]
 
     gif_html = ""
     if embed_media and creature is not None:
-        data_uri = _gif_data_uri(creature, trace, width=media_width, height=media_height)
+        data_uri = _gif_data_uri(creature, trace, task=task, width=media_width, height=media_height)
         if data_uri:
             gif_html = f"<div class='card'><img src='{data_uri}' alt='episode replay' /></div>"
 
