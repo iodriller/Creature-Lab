@@ -1,0 +1,14 @@
+{
+  "creature": "quadruped",
+  "task": "step_over",
+  "backend": "pybullet api 202010061",
+  "best_score": 0.0229,
+  "score_summary": {
+    "forward": 0.0229,
+    "target": 0.0,
+    "energy": -0.0,
+    "fall": 0.0,
+    "total": 0.0229
+  },
+  "note": "open-loop sinusoid controller baseline; the fixed gait barely clears a staircase"
+}

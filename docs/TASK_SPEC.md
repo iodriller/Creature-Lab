@@ -21,7 +21,19 @@ uv run creature-lab validate examples/quadruped.json --task examples/crawl_forwa
 
 - `duration` is episode length in seconds.
 - `timestep` is simulation step size and must not exceed `duration`.
-- `terrain.type` is currently `plane`; `terrain.friction` controls contact friction.
+- `terrain.friction` controls contact friction on every terrain type.
+- `terrain.type` is one of:
+  - `plane` (default): an infinite flat ground.
+  - `slope`: a fixed incline along +x, set by `terrain.slope_angle` (radians).
+  - `steps`: a staircase along +x, set by `terrain.step_height` and `terrain.step_length`.
+  - `gaps`: periodic impassable gaps along +x (`terrain.gap_width`, `terrain.gap_period`),
+    with a solid platform around the origin so a creature always spawns on ground.
+  - `rough`: seeded per-cell noise (`terrain.roughness`, `terrain.seed`) for a reproducible
+    bumpy surface.
+
+  Non-`plane` terrain builds a deterministic heightfield (see `creature_lab/terrain.py`)
+  that both the PyBullet and MuJoCo backends simulate with the same shape; exact contact
+  dynamics still differ by backend, same as with creature bodies (see [Concepts](CONCEPTS.md)).
 - `reward` combines forward distance, target progress, energy penalty, and fall penalty.
 - `target` is optional and currently supports a sphere target.
 - `damage_event` removes one part at a given time.

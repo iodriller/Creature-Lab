@@ -1,0 +1,14 @@
+{
+  "creature": "humanoid_minimal",
+  "task": "balance",
+  "backend": "mujoco 3.10.0",
+  "best_score": 0.0,
+  "score_summary": {
+    "forward": 0.0,
+    "target": 0.0,
+    "energy": -0.0,
+    "fall": 0.0,
+    "total": 0.0
+  },
+  "note": "open-loop sinusoid controller baseline (MuJoCo backend)"
+}

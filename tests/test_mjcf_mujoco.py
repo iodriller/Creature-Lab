@@ -33,6 +33,24 @@ def test_mjcf_loads_in_mujoco():
     assert model.nbody == 6
 
 
+def test_mjcf_with_terrain_builds_a_loadable_hfield():
+    mujoco = pytest.importorskip("mujoco")
+    from creature_lab.schema.task import TerrainSpec
+
+    terrain = TerrainSpec(type="steps", step_height=0.05, step_length=0.4)
+    xml = export_mjcf(generate_quadruped(), terrain=terrain)
+
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(xml)
+    assert root.find("asset/hfield") is not None
+    ground = next(g for g in root.findall("worldbody/geom") if g.get("name") == "ground")
+    assert ground.get("type") == "hfield"
+
+    model = mujoco.MjModel.from_xml_string(xml)
+    assert model.nhfield == 1
+
+
 def test_mjcf_excludes_parent_child_contacts():
     import xml.etree.ElementTree as ET
 
@@ -77,6 +95,39 @@ def test_mujoco_backend_runs_an_episode():
     import math
 
     assert math.isfinite(frames[-1].score)
+
+
+@pytest.mark.parametrize(
+    "terrain",
+    [
+        {"type": "slope", "slope_angle": 0.15},
+        {"type": "steps", "step_height": 0.05, "step_length": 0.4},
+        {"type": "gaps", "gap_width": 0.2, "gap_period": 1.0},
+        {"type": "rough", "roughness": 0.03, "seed": 1},
+    ],
+)
+def test_mujoco_backend_non_flat_terrain_produces_finite_frames(terrain):
+    pytest.importorskip("mujoco")
+    import math
+
+    from creature_lab.backends.mujoco_backend import MuJoCoBackend
+    from creature_lab.controllers.sinusoid import sinusoid_targets
+
+    creature = generate_quadruped()
+    task = TaskSpec.model_validate(
+        {"name": "t", "duration": 0.5, "timestep": 1 / 60, "terrain": terrain}
+    )
+    backend = MuJoCoBackend()
+    backend.build(creature, task)
+    try:
+        for i in range(task.step_count()):
+            backend.apply_motor_targets(sinusoid_targets(creature, i * task.timestep))
+            frame = backend.step(task.timestep)
+    finally:
+        backend.close()
+
+    for pose in frame.parts.values():
+        assert all(math.isfinite(v) for v in pose.position)
 
 
 def test_mujoco_backend_reset_reruns():

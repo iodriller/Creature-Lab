@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from creature_lab.schema import CreatureSpec, TaskSpec
 from creature_lab.schema.creature import JointType
+from creature_lab.terrain import DEFAULT_CELL_SIZE, DEFAULT_COLS, DEFAULT_ROWS, is_flat
 
 # Heuristics for the soft checks.
 _MAX_REASONABLE_STEPS = 200_000
@@ -41,6 +42,17 @@ def validate_episode_inputs(creature: CreatureSpec, task: TaskSpec) -> list[str]
 
     if task.target is not None and task.reward.target_distance == 0.0:
         warnings.append("task has a target but reward.target_distance is 0 (target unused)")
+
+    if task.target is not None and not is_flat(task.terrain):
+        half_x = (DEFAULT_ROWS * DEFAULT_CELL_SIZE) / 2
+        half_y = (DEFAULT_COLS * DEFAULT_CELL_SIZE) / 2
+        tx, ty, _ = task.target.position
+        if abs(tx) > half_x or abs(ty) > half_y:
+            warnings.append(
+                f"target at ({tx}, {ty}) lies outside the generated terrain's "
+                f"{2 * half_x:g}m x {2 * half_y:g}m extent (centered at the origin); "
+                "the creature would have to walk off the edge of the ground to reach it"
+            )
 
     reward = task.reward
     # forward/target are "go" objectives; fall_penalty is a "stay upright" objective

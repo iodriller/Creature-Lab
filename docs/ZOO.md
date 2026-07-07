@@ -30,6 +30,13 @@ The repo now includes a small local challenge pack using existing simulator feat
 - `push_recovery`: stay useful after a lateral impulse.
 - `reach_target`: reduce distance to a target sphere.
 - `stability_hold`: avoid falling without forward-distance reward.
+- `slope_climb` (quadruped): move along +x up a fixed incline (`terrain.type: slope`).
+- `step_over` (quadruped): move along +x over a staircase (`terrain.type: steps`).
+- `gap_cross` (quadruped): move along +x across periodic gaps, past a solid starting
+  platform (`terrain.type: gaps`).
+
+See [Task Spec](TASK_SPEC.md) for the full terrain field reference (`slope`, `steps`,
+`gaps`, `rough`) — implemented as a shared, deterministic heightfield on both backends.
 
 List exact creature/task availability with:
 
@@ -47,6 +54,12 @@ uv run creature-lab bench --zoo --task crawl_forward --attempts 3 --seed 0 --out
 
 Benchmark output includes scores, best/mean score, backend, controller, seed, saved run paths,
 and pass/fail status when a packaged baseline exists.
+
+Every packaged creature/task pair has a calibrated PyBullet baseline
+(`baselines/<task>.json`) **and** a MuJoCo baseline (`baselines/<task>.mujoco.json`).
+`bench --backend mujoco --zoo` compares against the MuJoCo one automatically. The two
+numbers are often very different for the same open-loop gait — that gap is expected (see
+[Concepts](CONCEPTS.md) on portability) and is exactly what `sim2sim` measures directly.
 
 ## Gallery
 
