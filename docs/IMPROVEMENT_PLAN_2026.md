@@ -70,7 +70,15 @@ staying tiny.
 
 ---
 
-## Phase R — The report, upgraded (top priority)
+## Phase R — The report, upgraded (top priority) ✅
+
+**Status (2026-07-07):** R1–R4 shipped. `creature_lab/reports_html.py` adds
+`report_to_html`, `comparison_to_html`, and the zoo `gallery_index_html`/`gallery_card_html`
+renderers; `reports.py` gained `build_report_bundle`, `build_comparison`, and a
+`reproducibility` block (also rendered into the Markdown report). CLI: `report --html`,
+`compare --html`, and `gallery build --zoo` now also emits `index.html`. All output is
+verified to embed no external URLs. 11 new tests (`tests/test_reports_html.py` +
+extensions to `tests/test_productization.py`); full suite green (252 passing), ruff clean.
 
 **Why first:** the report is what a user keeps, shares, and judges the tool by. Today it is
 `report_to_markdown` — a flat text dump with no visuals, no comparison, no reproducibility

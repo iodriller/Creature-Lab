@@ -1,0 +1,432 @@
+"""Self-contained HTML rendering for run reports (Phase R1/R2).
+
+Every function here returns a single string with inline CSS/SVG and no external
+requests, so the result opens offline in a browser. No new dependencies: sparklines
+and the root-path plot are hand-drawn SVG from the same pure series already produced
+by ``viewers/overlays.py``; the optional GIF preview reuses the existing
+``render_trace`` / ``write_animation`` path and embeds it as a ``data:`` URI.
+"""
+
+from __future__ import annotations
+
+import base64
+import html
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from creature_lab.schema import CreatureSpec, EpisodeTrace
+
+_STYLE = """
+:root { color-scheme: light dark; }
+body {
+  font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif;
+  max-width: 860px; margin: 2rem auto; padding: 0 1rem;
+  color: #1a1a1a; background: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  body { color: #e6e6e6; background: #14161a; }
+  .card { background: #1d2026; border-color: #2c313a; }
+  .bar-track { background: #2c313a; }
+  th, td { border-color: #2c313a; }
+}
+h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+h2 {
+  font-size: 1.05rem; margin-top: 2rem;
+  border-bottom: 1px solid currentColor; padding-bottom: 0.25rem;
+}
+.card { border: 1px solid #d0d0d0; border-radius: 8px; padding: 1rem; margin: 0.75rem 0; }
+.meta { opacity: 0.75; font-size: 0.9rem; }
+.bar-row { display: flex; align-items: center; gap: 0.5rem; margin: 0.3rem 0; }
+.bar-label { width: 11rem; font-size: 0.85rem; flex-shrink: 0; }
+.bar-track { flex: 1; background: #eee; border-radius: 4px; height: 0.9rem; overflow: hidden; }
+.bar-fill { height: 100%; background: #3b82f6; }
+.bar-fill.neg { background: #ef4444; }
+.bar-value {
+  width: 4.5rem; text-align: right; font-size: 0.85rem; font-variant-numeric: tabular-nums;
+}
+.sparkline-row { margin: 0.6rem 0; }
+.sparkline-row .bar-label { display: block; margin-bottom: 0.2rem; }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th, td { border: 1px solid #d0d0d0; padding: 0.35rem 0.6rem; text-align: right; }
+th:first-child, td:first-child { text-align: left; }
+code { font-size: 0.85rem; }
+.warn { color: #b45309; }
+.pattern { color: #b91c1c; }
+.ok { color: #15803d; }
+"""
+
+
+def _escape(value: Any) -> str:
+    return html.escape("-" if value is None else str(value))
+
+
+def _fmt(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, float):
+        return f"{value:.4f}"
+    return str(value)
+
+
+def _svg_sparkline(values: list[float], *, width: int = 320, height: int = 56) -> str:
+    if len(values) < 2:
+        return "<p class='meta'>not enough samples</p>"
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1.0
+    step = width / (len(values) - 1)
+    points = " ".join(
+        f"{i * step:.1f},{height - ((v - lo) / span) * (height - 4) - 2:.1f}"
+        for i, v in enumerate(values)
+    )
+    return (
+        f'<svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" role="img">'
+        f'<polyline points="{points}" fill="none" stroke="#3b82f6" stroke-width="1.6"/>'
+        "</svg>"
+    )
+
+
+def _svg_top_down_paths(
+    named_points: list[tuple[str, list[tuple[float, float, float]], str]],
+    *,
+    size: int = 360,
+) -> str:
+    """Overhead (X/Y) SVG plot of one or more root-path polylines."""
+    all_xy = [(p[0], p[1]) for _, points, _ in named_points for p in points]
+    if len(all_xy) < 2:
+        return "<p class='meta'>not enough samples</p>"
+    xs, ys = [p[0] for p in all_xy], [p[1] for p in all_xy]
+    lo_x, hi_x = min(xs), max(xs)
+    lo_y, hi_y = min(ys), max(ys)
+    span = max(hi_x - lo_x, hi_y - lo_y) or 1.0
+    margin = 10
+
+    def project(x: float, y: float) -> tuple[float, float]:
+        px = margin + (x - lo_x) / span * (size - 2 * margin)
+        py = margin + (y - lo_y) / span * (size - 2 * margin)
+        return px, py
+
+    polylines = []
+    legend = []
+    for name, points, color in named_points:
+        coords = " ".join(f"{px:.1f},{py:.1f}" for px, py in (project(p[0], p[1]) for p in points))
+        polylines.append(
+            f'<polyline points="{coords}" fill="none" stroke="{color}" stroke-width="2"/>'
+        )
+        start_px, start_py = project(points[0][0], points[0][1])
+        polylines.append(f'<circle cx="{start_px:.1f}" cy="{start_py:.1f}" r="4" fill="{color}"/>')
+        legend.append(f'<span style="color:{color}">&#9632;</span> {_escape(name)}')
+    return (
+        f'<svg viewBox="0 0 {size} {size}" width="{size}" height="{size}" role="img">'
+        + "".join(polylines)
+        + "</svg>"
+        + f"<div class='meta'>{' &nbsp; '.join(legend)} "
+        "(start marked with a dot; top-down X/Y)</div>"
+    )
+
+
+def _score_bar_html(component_scores: dict[str, float]) -> str:
+    if not component_scores:
+        return "<p class='meta'>No component score metadata recorded.</p>"
+    peak = max(abs(v) for v in component_scores.values()) or 1.0
+    rows = []
+    for name, value in component_scores.items():
+        width = min(abs(value) / peak, 1.0) * 100
+        cls = "neg" if value < 0 else ""
+        rows.append(
+            "<div class='bar-row'>"
+            f"<span class='bar-label'>{_escape(name)}</span>"
+            f"<span class='bar-track'>"
+            f"<span class='bar-fill {cls}' style='width:{width:.1f}%'></span></span>"
+            f"<span class='bar-value'>{_fmt(value)}</span>"
+            "</div>"
+        )
+    return "".join(rows)
+
+
+def _gif_data_uri(
+    creature: CreatureSpec, trace: EpisodeTrace, *, width: int, height: int
+) -> str | None:
+    """Best-effort inline GIF preview; returns None if the sim/export extras are absent."""
+    try:
+        from creature_lab.backends.pybullet_backend import render_trace
+        from creature_lab.viewers.video_exporter import write_animation
+    except ImportError:
+        return None
+    frames = render_trace(creature, trace, width=width, height=height)
+    with tempfile.TemporaryDirectory() as tmp:
+        gif_path = write_animation(frames, Path(tmp) / "preview.gif")
+        encoded = base64.b64encode(gif_path.read_bytes()).decode("ascii")
+    return f"data:image/gif;base64,{encoded}"
+
+
+def _diagnosis_html(diagnosis: dict[str, Any]) -> str:
+    patterns = diagnosis.get("patterns") or []
+    suggestions = diagnosis.get("suggestions") or []
+    if not patterns:
+        return "<p class='ok'>No failure patterns detected.</p>"
+    items = []
+    for index, pattern in enumerate(patterns):
+        suggestion = suggestions[index] if index < len(suggestions) else ""
+        suffix = f" &mdash; {_escape(suggestion)}" if suggestion else ""
+        items.append(f"<li class='pattern'>{_escape(pattern)}{suffix}</li>")
+    return "<ul>" + "".join(items) + "</ul>"
+
+
+def _reproducibility_html(repro: dict[str, Any]) -> str:
+    rows = [
+        (
+            "Schema / lab version",
+            f"{_fmt(repro.get('schema_version'))} / {_fmt(repro.get('lab_version'))}",
+        ),
+        ("Backend", f"{_fmt(repro.get('backend'))} {_fmt(repro.get('backend_version'))}"),
+        ("Timestep", _fmt(repro.get("timestep"))),
+        ("Seed", _fmt(repro.get("seed"))),
+        ("Creature hash", _fmt(repro.get("creature_hash"))),
+        ("Task hash", _fmt(repro.get("task_hash"))),
+    ]
+    body = "".join(f"<tr><td>{_escape(k)}</td><td>{_escape(v)}</td></tr>" for k, v in rows)
+    command = repro.get("command")
+    command_html = f"<pre><code>{_escape(command)}</code></pre>" if command else ""
+    return f"<table>{body}</table>{command_html}"
+
+
+def report_to_html(
+    report: dict[str, Any],
+    trace: EpisodeTrace,
+    creature: CreatureSpec | None = None,
+    *,
+    embed_media: bool = True,
+    media_width: int = 320,
+    media_height: int = 240,
+) -> str:
+    """Render a ``build_report`` dict as a single self-contained HTML page."""
+    creature_info, task_info, backend = report["creature"], report["task"], report["backend"]
+    summary, diagnosis = report["summary"], report["diagnosis"]
+
+    gif_html = ""
+    if embed_media and creature is not None:
+        data_uri = _gif_data_uri(creature, trace, width=media_width, height=media_height)
+        if data_uri:
+            gif_html = f"<div class='card'><img src='{data_uri}' alt='episode replay' /></div>"
+
+    sparklines = ""
+    if creature is not None:
+        from creature_lab.viewers.overlays import (
+            center_of_mass_trail,
+            joint_energy_series,
+            root_path,
+        )
+
+        com_trail = center_of_mass_trail(creature, trace)
+        heights = [point[2] for point in com_trail]
+        energy = joint_energy_series(trace)
+        scores = [frame.score for frame in trace.frames]
+        sparklines = (
+            "<div class='sparkline-row'><span class='bar-label'>CoM height (m)</span>"
+            f"{_svg_sparkline(heights)}</div>"
+            "<div class='sparkline-row'><span class='bar-label'>Score over time</span>"
+            f"{_svg_sparkline(scores)}</div>"
+            "<div class='sparkline-row'><span class='bar-label'>Joint energy (per-frame)</span>"
+            f"{_svg_sparkline(energy)}</div>"
+        )
+        path_svg = _svg_top_down_paths(
+            [(creature_info["name"], root_path(creature, trace), "#3b82f6")]
+        )
+    else:
+        path_svg = "<p class='meta'>No creature.json available; root path not rendered.</p>"
+
+    warnings_html = (
+        "".join(f"<li class='warn'>{_escape(w)}</li>" for w in report.get("warnings") or [])
+        or "<li class='ok'>none</li>"
+    )
+
+    improvement = report.get("improvement")
+    improvement_html = "<p class='meta'>No evolve/ask lineage recorded for this run.</p>"
+    if improvement:
+        if improvement["kind"] == "evolve":
+            improvement_html = (
+                f"<p>Evolve: {_escape(improvement.get('strategy'))} strategy, "
+                f"{_fmt(improvement.get('attempts'))} attempt(s), "
+                f"best score {_fmt(improvement.get('best_score'))}.</p>"
+            )
+        else:
+            improvement_html = (
+                f"<p>Ask: {_fmt(improvement.get('attempts'))} attempt(s), "
+                f"{_fmt(improvement.get('accepted'))} accepted, "
+                f"{_fmt(improvement.get('invalid'))} invalid.</p>"
+            )
+            if improvement.get("goal"):
+                improvement_html += f"<p class='meta'>Goal: {_escape(improvement['goal'])}</p>"
+
+    artifacts_html = "".join(
+        f"<li><code>{_escape(name)}</code>: <code>{_escape(value)}</code></li>"
+        for name, value in report["artifacts"].items()
+    )
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Creature Lab report: {_escape(report["run_id"])}</title>
+<style>{_STYLE}</style>
+</head>
+<body>
+<h1>Creature Lab Run Report</h1>
+<p class="meta">
+  Creature <strong>{_escape(creature_info["name"])}</strong>
+  (<code>{_escape(creature_info["hash"])}</code>) on task
+  <strong>{_escape(task_info["name"])}</strong> (<code>{_escape(task_info["hash"])}</code>)
+  &middot; backend {_escape(backend["name"])} {_escape(backend["version"])}
+</p>
+<div class="card">
+  <strong>Score: {_fmt(report["score"])}</strong>
+  &middot; {summary["frame_count"]} frames over {_fmt(summary["duration"])}s
+</div>
+{gif_html}
+<h2>Score breakdown</h2>
+{_score_bar_html(summary.get("component_scores") or {})}
+
+<h2>Signals</h2>
+{sparklines}
+<p>
+  Net displacement: {_fmt(summary["net_displacement"])} m &middot;
+  Forward displacement: {_fmt(summary["forward_displacement"])} m &middot;
+  Target progress: {_fmt(summary.get("target_progress"))} &middot;
+  Fell: {_fmt(summary.get("fell"))}
+</p>
+
+<h2>Root path (top-down)</h2>
+{path_svg}
+
+<h2>Diagnostics</h2>
+{_diagnosis_html(diagnosis)}
+
+<h2>Warnings</h2>
+<ul>{warnings_html}</ul>
+
+<h2>Improvement</h2>
+{improvement_html}
+
+<h2>Reproducibility</h2>
+{_reproducibility_html(report.get("reproducibility") or {})}
+
+<h2>Artifacts</h2>
+<ul>{artifacts_html}</ul>
+</body>
+</html>
+"""
+
+
+def gallery_card_html(
+    name: str,
+    task_name: str,
+    baseline: dict[str, Any] | None,
+    current_score: float | None,
+    gif_name: str | None,
+    failure_note: str,
+) -> str:
+    """One zoo creature's card: baseline vs. current score, and its replay GIF."""
+    expected = baseline.get("best_score") if baseline else None
+    delta_html = ""
+    if expected is not None and current_score is not None:
+        delta = current_score - expected
+        cls = "ok" if delta >= 0 else "pattern"
+        sign = "+" if delta >= 0 else ""
+        delta_html = f"<span class='{cls}'>({sign}{delta:.4f} vs. baseline)</span>"
+    media_html = (
+        f"<img src='{_escape(gif_name)}' alt='{_escape(name)} replay' />" if gif_name else ""
+    )
+    return f"""<div class="card">
+  <h2>{_escape(name)}</h2>
+  {media_html}
+  <p>Default task: <code>{_escape(task_name)}</code></p>
+  <p>Baseline score: {_fmt(expected)} &middot; Current score: {_fmt(current_score)} {delta_html}</p>
+  <p class="meta">{_escape(failure_note)}</p>
+  <p><code>uv run creature-lab zoo run {_escape(name)}</code></p>
+</div>"""
+
+
+def gallery_index_html(cards: list[str]) -> str:
+    """Wrap per-creature ``gallery_card_html`` fragments into one gallery page."""
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Creature Zoo Gallery</title>
+<style>{_STYLE}</style>
+</head>
+<body>
+<h1>Creature Zoo Gallery</h1>
+{"".join(cards)}
+</body>
+</html>
+"""
+
+
+def comparison_to_html(
+    report_a: dict[str, Any],
+    report_b: dict[str, Any],
+    comparison: dict[str, Any],
+    *,
+    creature_a: CreatureSpec | None = None,
+    trace_a: EpisodeTrace | None = None,
+    creature_b: CreatureSpec | None = None,
+    trace_b: EpisodeTrace | None = None,
+) -> str:
+    """Render a before/after comparison between two reports built by ``build_report``."""
+    path_svg = "<p class='meta'>No creature.json available for one or both runs.</p>"
+    if (
+        creature_a is not None
+        and trace_a is not None
+        and creature_b is not None
+        and trace_b is not None
+    ):
+        from creature_lab.viewers.overlays import root_path
+
+        path_svg = _svg_top_down_paths(
+            [
+                (report_a["run_id"], root_path(creature_a, trace_a), "#3b82f6"),
+                (report_b["run_id"], root_path(creature_b, trace_b), "#ef4444"),
+            ]
+        )
+
+    signal_rows = "".join(
+        f"<tr><td>{_escape(key)}</td><td>{_fmt(v['a'])}</td><td>{_fmt(v['b'])}</td>"
+        f"<td>{'+' if v['delta'] >= 0 else ''}{_fmt(v['delta'])}</td></tr>"
+        for key, v in comparison["signals"].items()
+    )
+    delta = comparison["score_delta"]
+    delta_class = "ok" if delta >= 0 else "pattern"
+    title = f"{comparison['run_a']} vs {comparison['run_b']}"
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Creature Lab comparison: {_escape(title)}</title>
+<style>{_STYLE}</style>
+</head>
+<body>
+<h1>Run Comparison</h1>
+<p class="meta">
+  <span style="color:#3b82f6">&#9632;</span> A: {_escape(comparison["run_a"])}
+  (score {_fmt(comparison["score_a"])}) &nbsp;vs&nbsp;
+  <span style="color:#ef4444">&#9632;</span> B: {_escape(comparison["run_b"])}
+  (score {_fmt(comparison["score_b"])})
+</p>
+<div class="card">
+  <strong class="{delta_class}">Score delta: {"+" if delta >= 0 else ""}{_fmt(delta)}</strong>
+</div>
+
+<h2>Root path (top-down, overlaid)</h2>
+{path_svg}
+
+<h2>Signal deltas</h2>
+<table>
+<tr><th>signal</th><th>A</th><th>B</th><th>delta</th></tr>
+{signal_rows}
+</table>
+</body>
+</html>
+"""

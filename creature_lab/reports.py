@@ -84,6 +84,17 @@ def _artifact_paths(run_dir: Path) -> dict[str, str]:
     return {name: str(path) for name, path in names.items() if path.exists() or name == "run_dir"}
 
 
+def _reproduce_command(run_dir: Path, backend: str, seed: int | None) -> str | None:
+    creature_path, task_path = run_dir / "creature.json", run_dir / "task.json"
+    if not creature_path.exists() or not task_path.exists():
+        return None
+    parts = ["creature-lab", "run", str(creature_path), "--task", str(task_path)]
+    parts += ["--backend", backend]
+    if seed is not None:
+        parts += ["--seed", str(seed)]
+    return " ".join(parts)
+
+
 def build_report(path: Path, runs_dir: Path = DEFAULT_RUNS_DIR) -> dict[str, Any]:
     """Build a serializable report for a saved run directory or trace."""
     run_dir, creature, task, trace = _load_artifacts(path, runs_dir)
@@ -106,20 +117,23 @@ def build_report(path: Path, runs_dir: Path = DEFAULT_RUNS_DIR) -> dict[str, Any
     improvement = _lineage_summary(run_dir) or _agent_summary(run_dir)
     creature_hash = spec_hash(creature) if creature is not None else None
     task_hash = spec_hash(task) if task is not None else None
+    creature_hash = creature_hash or (meta.creature_hash if meta else None)
+    task_hash = task_hash or (meta.task_hash if meta else None)
+    seed = meta.seed if meta else None
 
     return {
         "run_id": trace.run_id,
         "run_dir": str(run_dir),
         "creature": {
             "name": trace.creature_name,
-            "hash": creature_hash or (meta.creature_hash if meta else None),
+            "hash": creature_hash,
             "parts": len(creature.parts) if creature is not None else None,
             "joints": len(creature.joints) if creature is not None else None,
             "motors": len(creature.motors) if creature is not None else None,
         },
         "task": {
             "name": trace.task_name,
-            "hash": task_hash or (meta.task_hash if meta else None),
+            "hash": task_hash,
         },
         "backend": {
             "name": trace.backend,
@@ -130,7 +144,44 @@ def build_report(path: Path, runs_dir: Path = DEFAULT_RUNS_DIR) -> dict[str, Any
         "warnings": summary.warnings,
         "diagnosis": diagnosis,
         "improvement": improvement,
+        "reproducibility": {
+            "schema_version": meta.schema_version if meta else None,
+            "lab_version": meta.lab_version if meta else None,
+            "timestep": meta.timestep if meta else None,
+            "seed": seed,
+            "creature_hash": creature_hash,
+            "task_hash": task_hash,
+            "backend": trace.backend,
+            "backend_version": meta.backend_version if meta else None,
+            "command": _reproduce_command(run_dir, trace.backend, seed),
+        },
         "artifacts": _artifact_paths(run_dir),
+    }
+
+
+def build_report_bundle(
+    path: Path, runs_dir: Path = DEFAULT_RUNS_DIR
+) -> tuple[dict[str, Any], EpisodeTrace, CreatureSpec | None]:
+    """Report dict plus the raw trace/creature, for renderers that need series data (HTML)."""
+    _, creature, _, trace = _load_artifacts(path, runs_dir)
+    return build_report(path, runs_dir=runs_dir), trace, creature
+
+
+def build_comparison(report_a: dict[str, Any], report_b: dict[str, Any]) -> dict[str, Any]:
+    """Score and signal deltas (``b - a``) between two reports built by ``build_report``."""
+    summary_a, summary_b = report_a["summary"], report_b["summary"]
+    signals: dict[str, dict[str, float]] = {}
+    for key in ("net_displacement", "forward_displacement", "total_joint_motion"):
+        value_a, value_b = summary_a.get(key), summary_b.get(key)
+        if value_a is not None and value_b is not None:
+            signals[key] = {"a": value_a, "b": value_b, "delta": value_b - value_a}
+    return {
+        "run_a": report_a["run_id"],
+        "run_b": report_b["run_id"],
+        "score_a": report_a["score"],
+        "score_b": report_b["score"],
+        "score_delta": report_b["score"] - report_a["score"],
+        "signals": signals,
     }
 
 
@@ -215,6 +266,22 @@ def report_to_markdown(report: dict[str, Any]) -> str:
             )
             if improvement.get("goal"):
                 lines.append(f"- Goal: {improvement['goal']}")
+
+    repro = report.get("reproducibility") or {}
+    lines.extend(
+        [
+            "",
+            "## Reproducibility",
+            f"- Schema/lab version: {_format_value(repro.get('schema_version'))} / "
+            f"{_format_value(repro.get('lab_version'))}",
+            f"- Timestep: {_format_value(repro.get('timestep'))}",
+            f"- Seed: {_format_value(repro.get('seed'))}",
+            f"- Creature hash: {_format_value(repro.get('creature_hash'))}",
+            f"- Task hash: {_format_value(repro.get('task_hash'))}",
+        ]
+    )
+    if repro.get("command"):
+        lines.extend(["- Reproduce:", f"  ```\n  {repro['command']}\n  ```"])
 
     lines.extend(["", "## Artifacts"])
     for name, value in report["artifacts"].items():

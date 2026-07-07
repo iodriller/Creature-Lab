@@ -928,6 +928,10 @@ def report(
     out: Annotated[
         Path | None, typer.Option("--out", "-o", help="Write the report here instead of stdout.")
     ] = None,
+    html_out: Annotated[
+        Path | None,
+        typer.Option("--html", help="Also write a self-contained HTML run report here."),
+    ] = None,
     runs_dir: Annotated[
         Path, typer.Option(help="Directory used when resolving the `latest` alias.")
     ] = DEFAULT_RUNS_DIR,
@@ -936,13 +940,23 @@ def report(
     ] = False,
 ) -> None:
     """Generate a concise run report with score, diagnostics, and artifact paths."""
-    from creature_lab.reports import build_report, report_to_markdown
+    from creature_lab.reports import build_report, build_report_bundle, report_to_markdown
 
     try:
-        data = build_report(path, runs_dir=runs_dir)
+        if html_out is not None:
+            data, trace, creature = build_report_bundle(path, runs_dir=runs_dir)
+        else:
+            data = build_report(path, runs_dir=runs_dir)
     except FileNotFoundError as exc:
         console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(code=2) from exc
+
+    if html_out is not None:
+        from creature_lab.reports_html import report_to_html
+
+        html_out.parent.mkdir(parents=True, exist_ok=True)
+        html_out.write_text(report_to_html(data, trace, creature))
+        console.print(f"[green]wrote[/green] HTML report -> {html_out}")
 
     rendered = (
         json.dumps(data, indent=2, sort_keys=True) if json_output else report_to_markdown(data)
@@ -951,6 +965,8 @@ def report(
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(rendered)
         console.print(f"[green]wrote[/green] report -> {out}")
+        return
+    if html_out is not None:
         return
     _write_stdout(rendered)
 
@@ -1066,11 +1082,43 @@ def compare(
     gap: Annotated[float, typer.Option(help="Sideways spacing between the two creatures.")] = 1.0,
     fps: Annotated[float, typer.Option(help="Playback frames per second.")] = 30.0,
     port: Annotated[int, typer.Option(help="Port for the Viser server.")] = 8080,
+    html_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--html", help="Write a before/after comparison report instead of opening Viser."
+        ),
+    ] = None,
     runs_dir: Annotated[
         Path, typer.Option(help="Directory used when resolving bare run ids or `latest`.")
     ] = DEFAULT_RUNS_DIR,
 ) -> None:
-    """Replay two saved runs side by side in one Viser scene."""
+    """Replay two saved runs side by side in one Viser scene, or diff their reports."""
+    if html_out is not None:
+        from creature_lab.reports import build_comparison, build_report_bundle
+        from creature_lab.reports_html import comparison_to_html
+
+        try:
+            report_a, trace_a, creature_a = build_report_bundle(run_a, runs_dir=runs_dir)
+            report_b, trace_b, creature_b = build_report_bundle(run_b, runs_dir=runs_dir)
+        except FileNotFoundError as exc:
+            console.print(f"[red]error:[/red] {exc}")
+            raise typer.Exit(code=2) from exc
+        comparison = build_comparison(report_a, report_b)
+        html_out.parent.mkdir(parents=True, exist_ok=True)
+        html_out.write_text(
+            comparison_to_html(
+                report_a,
+                report_b,
+                comparison,
+                creature_a=creature_a,
+                trace_a=trace_a,
+                creature_b=creature_b,
+                trace_b=trace_b,
+            )
+        )
+        console.print(f"[green]wrote[/green] comparison report -> {html_out}")
+        return
+
     trace_a = _load_spec(_resolve_trace_path(run_a, runs_dir), EpisodeTrace)
     trace_b = _load_spec(_resolve_trace_path(run_b, runs_dir), EpisodeTrace)
     creature_a = _load_creature_for_trace(run_a, None, runs_dir)
@@ -1288,15 +1336,18 @@ def gallery_build(
         console.print("[red]error:[/red] use --zoo to build the packaged zoo gallery")
         raise typer.Exit(code=2)
 
+    from creature_lab.reports_html import gallery_card_html, gallery_index_html
     from creature_lab.zoo import default_task_name, list_zoo_creatures, zoo_baseline, zoo_creature
 
     out.mkdir(parents=True, exist_ok=True)
     cards: list[str] = []
+    html_cards: list[str] = []
     for name in list_zoo_creatures():
         task_name = default_task_name(name)
         creature, task_spec = zoo_creature(name, task_name)
         baseline = zoo_baseline(name, task_name)
         gif_name: str | None = None
+        current_score: float | None = None
         if media:
             try:
                 from creature_lab.backends.pybullet_backend import render_trace
@@ -1308,6 +1359,7 @@ def gallery_build(
                 raise typer.Exit(code=2) from exc
             trace = _simulate(creature, task_spec)
             save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
+            current_score = trace.score
             gif_path = out / f"{name}.gif"
             write_animation(render_trace(creature, trace, width=width, height=height), gif_path)
             gif_name = gif_path.name
@@ -1315,8 +1367,19 @@ def gallery_build(
         card_path = out / f"{name}.md"
         card_path.write_text(card)
         cards.append(f"- [{name}]({card_path.name})")
+        html_cards.append(
+            gallery_card_html(
+                name,
+                task_name,
+                baseline,
+                current_score,
+                gif_name,
+                _gallery_failure_note(name, task_name),
+            )
+        )
 
     (out / "index.md").write_text("# Creature Zoo Gallery\n\n" + "\n".join(cards) + "\n")
+    (out / "index.html").write_text(gallery_index_html(html_cards))
     console.print(f"[green]built[/green] {len(cards)} zoo gallery card(s) -> {out}")
 
 

@@ -94,13 +94,13 @@ These features are available, but they are not needed for the first run:
 | --- | --- |
 | Pre-flight validation | `uv run creature-lab validate examples/tripod.json --task examples/crawl_forward.json` |
 | Diagnose why a run failed | `uv run creature-lab diagnose runs/<run-id>` |
-| Write a run report | `uv run creature-lab report latest --out report.md` |
+| Write a run report | `uv run creature-lab report latest --out report.md` / `--html report.html` |
 | Benchmark the zoo | `uv run creature-lab bench --zoo --task crawl_forward --attempts 3 --out runs/bench.json` |
 | Export JSON schemas | `uv run creature-lab schema creature --out docs/schemas/creature.schema.json` |
 | Build local zoo gallery cards | `uv run creature-lab gallery build --zoo --out docs/assets/zoo --no-media` |
 | Ask for validated design edits | `uv run creature-lab ask "make it crawl farther" examples/tripod.json --task examples/crawl_forward.json --offline` |
 | Generate new creature specs | `uv run creature-lab scaffold worm --out worm.json --segments 6` |
-| Compare or plot runs | `uv run creature-lab compare runs/<a> runs/<b>` / `uv run creature-lab plot runs/<run-id>` |
+| Compare or plot runs | `uv run creature-lab compare runs/<a> runs/<b> --html diff.html` / `uv run creature-lab plot runs/<run-id>` |
 | MuJoCo backend | `uv sync --extra mujoco`, then `uv run creature-lab run ... --backend mujoco` |
 | URDF/MJCF bridge | `export-urdf`, `export-mjcf`, and `import-urdf` |
 | Gymnasium-style control | `creature_lab.env.CreatureEnv` |

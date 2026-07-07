@@ -71,6 +71,37 @@ def test_report_latest_markdown_and_json(tmp_path):
     assert payload["artifacts"]["trace"].endswith("trace.json")
 
 
+def test_report_html_writes_self_contained_file(tmp_path):
+    runs_dir, run_dir = _save_fixture_run(tmp_path)
+    html_out = tmp_path / "report.html"
+
+    result = runner.invoke(
+        app, ["report", "latest", "--runs-dir", str(runs_dir), "--html", str(html_out)]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    page = html_out.read_text()
+    assert "run1" in page
+    assert "http://" not in page and "https://" not in page
+    assert str(run_dir) not in result.stdout  # markdown wasn't also dumped to stdout
+
+
+def test_compare_html_writes_comparison_report(tmp_path):
+    runs_dir = tmp_path / "runs"
+    run_dir_a = save_run(_creature(), _trace("run_a"), runs_dir=runs_dir, task=_task())
+    run_dir_b = save_run(_creature(), _trace("run_b"), runs_dir=runs_dir, task=_task())
+    html_out = tmp_path / "diff.html"
+
+    result = runner.invoke(
+        app, ["compare", str(run_dir_a), str(run_dir_b), "--html", str(html_out)]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    page = html_out.read_text()
+    assert "run_a" in page and "run_b" in page
+    assert "http://" not in page and "https://" not in page
+
+
 def test_inspect_json_uses_latest_alias(tmp_path):
     runs_dir, _ = _save_fixture_run(tmp_path)
 
@@ -97,6 +128,10 @@ def test_gallery_build_cards_without_media(tmp_path):
     assert result.exit_code == 0, result.stdout
     assert (out / "index.md").exists()
     assert (out / "quadruped.md").exists()
+    assert (out / "index.html").exists()
+    page = (out / "index.html").read_text()
+    assert "quadruped" in page
+    assert "http://" not in page and "https://" not in page
 
 
 def test_zoo_list_json():

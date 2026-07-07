@@ -35,6 +35,7 @@ uv run creature-lab replay runs/<run-id>
 uv run creature-lab inspect runs/<run-id>
 uv run creature-lab diagnose runs/<run-id>
 uv run creature-lab report latest --out report.md
+uv run creature-lab report latest --html report.html
 uv run creature-lab view runs/<run-id>
 uv run creature-lab export latest --gif creature.gif
 ```
@@ -42,7 +43,9 @@ uv run creature-lab export latest --gif creature.gif
 - `replay` prints a short trace summary.
 - `inspect` prints metadata, hashes, score components, contacts, warnings, and run metrics.
 - `diagnose` explains likely failure patterns and suggested edits.
-- `report` writes a Markdown or JSON summary with score, diagnostics, and artifact paths.
+- `report` writes a Markdown or JSON summary with score, diagnostics, artifacts, and a
+  reproducibility block. `--html` also writes a self-contained HTML run card (score
+  breakdown, signal sparklines, root-path plot, and an optional embedded GIF preview).
 - `view` replays recorded poses in the browser viewer.
 - `export` renders a recorded trace to GIF or MP4.
 
@@ -58,6 +61,7 @@ uv run creature-lab export-urdf quad.json --out quad.urdf
 uv run creature-lab export-mjcf quad.json --out quad.xml
 uv run creature-lab import-urdf robot.urdf --out robot.json
 uv run creature-lab compare runs/<a> runs/<b>
+uv run creature-lab compare runs/<a> runs/<b> --html diff.html
 uv run creature-lab plot runs/<run-id> --metric joint_energy --out energy.png
 uv run creature-lab bench --zoo --task crawl_forward --attempts 3 --out runs/bench.json
 uv run creature-lab schema creature --out docs/schemas/creature.schema.json
