@@ -25,8 +25,13 @@ uv run creature-lab ask "make it crawl farther" examples/tripod.json --task exam
 ```
 
 - `run` simulates one creature/task pair.
-- `evolve` searches for a better body/controller.
-- `ask` applies validated design edits, offline or with an optional LLM provider.
+- `evolve` searches for a better body/controller. `--strategy llm` uses the validated agent
+  tool layer (offline by default) as the mutation operator instead of the structural
+  body/controller mutators; each attempt's rationale is saved into `lineage.json`
+  (`creature-lab lineage <run>` shows it).
+- `ask` applies validated design edits, offline or with an optional LLM provider. Every
+  proposal now sees the current diagnosis (failure patterns + suggestions) alongside the
+  score, so an online LLM can target the actual detected problem instead of guessing blind.
 
 ## Replay And Debug
 

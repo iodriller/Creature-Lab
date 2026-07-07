@@ -24,12 +24,15 @@ def _creature_summary(observation: Observation) -> str:
         for m in creature.motors
     )
     limbs = ", ".join(f"{p.id}(len={p.length})" for p in creature.parts if p.length is not None)
-    return (
+    summary = (
         f"goal: {observation.goal}\n"
         f"current best score: {observation.best_score:.4f}\n"
         f"motors: {motors or 'none'}\n"
         f"resizable limbs: {limbs or 'none'}"
     )
+    if observation.diagnosis:
+        summary += f"\ndiagnosed issues: {observation.diagnosis}"
+    return summary
 
 
 def build_prompt(observation: Observation) -> str:

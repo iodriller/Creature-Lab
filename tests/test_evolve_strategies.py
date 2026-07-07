@@ -195,6 +195,75 @@ def test_evolve_map_elites_cli_writes_archive_and_lineage(tmp_path):
     assert "candidate" in tree.stdout
 
 
+def test_evolve_llm_strategy_cli_writes_rationale_into_lineage(tmp_path):
+    pytest.importorskip("pybullet")
+    from typer.testing import CliRunner
+
+    from creature_lab.cli import app
+
+    runner = CliRunner()
+    runs_dir = tmp_path / "runs"
+    result = runner.invoke(
+        app,
+        [
+            "evolve",
+            "examples/quadruped.json",
+            "--task",
+            "examples/crawl_forward.json",
+            "--strategy",
+            "llm",
+            "--attempts",
+            "5",
+            "--seed",
+            "0",
+            "--runs-dir",
+            str(runs_dir),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    run_dir = next(p for p in runs_dir.iterdir() if p.is_dir())
+
+    import json
+
+    lineage = json.loads((run_dir / "lineage.json").read_text())
+    assert lineage["strategy"] == "llm"
+    mutated_nodes = [node for node in lineage["nodes"] if node["index"] > 0]
+    assert mutated_nodes
+    assert all("note" in node and node["note"] for node in mutated_nodes)
+
+    # Same seed must reproduce the same best score (offline policy, no network).
+    repeat = runner.invoke(
+        app,
+        [
+            "evolve",
+            "examples/quadruped.json",
+            "--task",
+            "examples/crawl_forward.json",
+            "--strategy",
+            "llm",
+            "--attempts",
+            "5",
+            "--seed",
+            "0",
+            "--runs-dir",
+            str(tmp_path / "runs2"),
+            "--json",
+        ],
+    )
+    first_payload = json.loads(
+        runner.invoke(
+            app,
+            [
+                "report",
+                str(run_dir),
+                "--json",
+            ],
+        ).stdout
+    )
+    repeat_payload = json.loads(repeat.stdout)
+    assert repeat_payload["best_score"] == pytest.approx(first_payload["score"])
+
+
 def test_archive_show_and_export_cli(tmp_path):
     pytest.importorskip("pybullet")
     from typer.testing import CliRunner

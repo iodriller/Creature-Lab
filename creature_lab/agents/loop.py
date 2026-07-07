@@ -17,6 +17,8 @@ from creature_lab.agents.tools import ToolError, apply_tool
 from creature_lab.schema import AgentStep, AgentTrace, CreatureSpec
 
 EvaluateFn = Callable[[CreatureSpec], float]
+#: Optional: summarize why a creature is scoring the way it does, as prompt-ready text.
+DiagnoseFn = Callable[[CreatureSpec], str]
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,8 @@ class Observation:
     best_score: float
     attempt: int
     goal: str = ""
+    #: Plain-language failure-pattern summary for the current best (empty if none/unavailable).
+    diagnosis: str = ""
 
 
 @dataclass(frozen=True)
@@ -56,8 +60,15 @@ def design_loop(
     attempts: int,
     goal: str = "",
     task_name: str = "design",
+    diagnose: DiagnoseFn | None = None,
 ) -> DesignResult:
-    """Run the policy for `attempts` steps, keeping any higher-scoring valid edit."""
+    """Run the policy for `attempts` steps, keeping any higher-scoring valid edit.
+
+    When ``diagnose`` is given, it is called on the current best before every proposal
+    and its text is attached to the ``Observation`` — so a policy (an LLM prompt, or a
+    future rule-based one) can react to *why* the creature is scoring the way it is,
+    not just the scalar score.
+    """
     if attempts < 0:
         raise ValueError("attempts must not be negative")
 
@@ -66,7 +77,8 @@ def design_loop(
     steps = [AgentStep(attempt=0, action="seed", valid=True, score=best_score, accepted=True)]
 
     for attempt in range(1, attempts + 1):
-        proposal = policy(Observation(best, best_score, attempt, goal))
+        diagnosis = diagnose(best) if diagnose is not None else ""
+        proposal = policy(Observation(best, best_score, attempt, goal, diagnosis))
         action = f"{proposal.tool}({proposal.args})"
         try:
             candidate = apply_tool(best, proposal.tool, proposal.args)

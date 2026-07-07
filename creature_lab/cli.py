@@ -22,6 +22,7 @@ from creature_lab.evolve import (
     cmaes,
     genetic,
     hill_climb,
+    llm_mutate,
     make_mutator,
     map_elites,
 )
@@ -460,7 +461,7 @@ def evolve(
     creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
     task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
     strategy: Annotated[
-        str, typer.Option(help="hill_climb, genetic, map_elites, or cmaes.")
+        str, typer.Option(help="hill_climb, genetic, map_elites, cmaes, or llm.")
     ] = "hill_climb",
     mutate_opt: Annotated[
         str, typer.Option("--mutate", help="What to mutate: body, controller, or body,controller.")
@@ -480,9 +481,9 @@ def evolve(
     _check_inputs(creature, task_spec)
     rng = random.Random(seed)
 
-    if strategy not in {"hill_climb", "genetic", "map_elites", "cmaes"}:
+    if strategy not in {"hill_climb", "genetic", "map_elites", "cmaes", "llm"}:
         console.print(
-            "[red]error:[/red] --strategy must be hill_climb, genetic, map_elites, or cmaes"
+            "[red]error:[/red] --strategy must be hill_climb, genetic, map_elites, cmaes, or llm"
         )
         raise typer.Exit(code=2)
 
@@ -490,13 +491,28 @@ def evolve(
     if not targets <= {"body", "controller"}:
         console.print("[red]error:[/red] --mutate must be 'body', 'controller', or both")
         raise typer.Exit(code=2)
-    mutate_fn = make_mutator("body" in targets, "controller" in targets)
+    # llm ignores --mutate: every edit goes through the validated agent tool layer instead
+    # of the structural body/controller mutators. Record each proposal's rationale (even
+    # rejected ones) so it can be saved into lineage.json for `report`/`lineage` to show.
+    llm_notes: list[str] = []
+
+    def _record_llm_note(proposal: Any) -> None:
+        llm_notes.append(f"{proposal.tool}: {proposal.note}" if proposal.note else proposal.tool)
+
+    def _llm_mutate_and_record(spec: CreatureSpec, r: random.Random) -> CreatureSpec:
+        return llm_mutate(spec, r, on_propose=_record_llm_note)
+
+    mutate_fn = (
+        _llm_mutate_and_record
+        if strategy == "llm"
+        else make_mutator("body" in targets, "controller" in targets)
+    )
 
     def evaluate(candidate: CreatureSpec) -> float:
         return _simulate(candidate, task_spec).score
 
     try:
-        if strategy == "hill_climb":
+        if strategy in ("hill_climb", "llm"):
             result = hill_climb(creature, evaluate, attempts=attempts, rng=rng, mutate_fn=mutate_fn)
         elif strategy == "genetic":
             result = genetic(creature, evaluate, attempts=attempts, rng=rng, mutate_fn=mutate_fn)
@@ -526,6 +542,11 @@ def evolve(
             "score": a.score,
             "accepted": a.accepted,
             "cell": list(a.cell) if a.cell is not None else None,
+            **(
+                {"note": llm_notes[a.index - 1]}
+                if strategy == "llm" and 0 < a.index <= len(llm_notes)
+                else {}
+            ),
         }
         for a in result.history
     ]
@@ -742,7 +763,8 @@ def lineage(
         for node in sorted(children.get(parent, []), key=lambda n: n["index"]):
             mark = "[green]*[/green]" if node["accepted"] else " "
             indent = "  " * depth
-            console.print(f"{indent}{mark} #{node['index']} score={node['score']:.4f}")
+            suffix = f" - {node['note']}" if node.get("note") else ""
+            console.print(f"{indent}{mark} #{node['index']} score={node['score']:.4f}{suffix}")
             render(node["index"], depth + 1)
 
     render(None, 0)
@@ -895,6 +917,17 @@ def ask(
             raise typer.Exit(code=2) from exc
         policy = LLMPolicy(model=model)
 
+    def diagnose_fn(candidate: CreatureSpec) -> str:
+        from creature_lab.diagnosis import diagnose as run_diagnosis
+
+        result = run_diagnosis(_simulate(candidate, task_spec), candidate, task_spec)
+        if not result.patterns:
+            return ""
+        return "; ".join(
+            f"{pattern} ({suggestion})" if suggestion else pattern
+            for pattern, suggestion in zip(result.patterns, result.suggestions, strict=True)
+        )
+
     result = design_loop(
         creature,
         lambda candidate: _simulate(candidate, task_spec).score,
@@ -902,6 +935,7 @@ def ask(
         attempts=attempts,
         goal=goal,
         task_name=task_spec.name,
+        diagnose=diagnose_fn,
     )
 
     best_trace = _simulate(result.best, task_spec, seed=seed)

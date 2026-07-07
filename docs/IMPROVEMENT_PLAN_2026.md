@@ -227,7 +227,21 @@ grid of "here are 30 different ways this body learned to move."
 
 ---
 
-## Phase 4 — LLM design loop, sharpened (offline-first, optional)
+## Phase 4 — LLM design loop, sharpened (offline-first, optional) ✅
+
+**Status (2026-07-07):** Shipped, with one deliberate deviation. `Observation` gained a
+`diagnosis: str` field; `design_loop` gained an optional `diagnose` callback invoked on the
+current best before every proposal, so the prompt (`agents/prompts.py`) now includes
+"diagnosed issues: ..." whenever a pattern is detected — wired into the `ask` CLI command.
+`evolve.py` gained `llm_mutate`, a `mutate_fn` that proposes one edit through the same
+offline `RandomToolPolicy` + validated tool layer, usable with `evolve --strategy llm`
+(dispatches to `hill_climb`); verified deterministic for a fixed `--seed` and improved the
+packaged quadruped from 0.57 to 0.86 in a 10-attempt smoke run. **Deviation:** rationale is
+saved into `lineage.json` (each node's `note` field, shown by `creature-lab lineage`), not
+`agent.json` — `evolve --strategy llm` is still the `evolve` command's lineage-based
+artifact, not the `ask` command's `AgentTrace`, so extending the artifact it already
+produces was the smaller, more consistent change. 20 new tests; full suite green
+(311 passing), ruff clean.
 
 **Why:** RoboMorph / Debate2Create show LLMs are effective *generative operators* for
 morphology. Creature Lab already has the safe substrate: validated tools
