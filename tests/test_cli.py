@@ -42,6 +42,27 @@ def test_inspect_reports_summary(tmp_path):
     assert "score breakdown" in result.stdout
     assert "contacts by part" in result.stdout
     assert "sha256:" in result.stdout
+    assert "terrain" in result.stdout
+    assert "plane" in result.stdout
+
+
+def test_inspect_shows_non_flat_terrain(tmp_path):
+    pytest.importorskip("pybullet")
+    runs_dir = tmp_path / "runs"
+    run = runner.invoke(
+        app,
+        ["zoo", "run", "quadruped", "--task", "slope_climb", "--runs-dir", str(runs_dir)],
+    )
+    assert run.exit_code == 0, run.stdout
+    [run_dir] = [path for path in runs_dir.iterdir() if path.is_dir()]
+
+    result = runner.invoke(app, ["inspect", str(run_dir)])
+    assert result.exit_code == 0, result.stdout
+    assert "slope" in result.stdout
+
+    json_result = runner.invoke(app, ["inspect", str(run_dir), "--json"])
+    payload = json.loads(json_result.stdout)
+    assert "slope" in payload["terrain"]
 
 
 def test_inspect_missing_path_exits_cleanly():

@@ -55,6 +55,7 @@ def test_build_report_basic_fields(tmp_path):
     assert report["creature"]["name"] == "test_bot"
     assert report["creature"]["parts"] == 1
     assert report["task"]["name"] == "crawl_forward"
+    assert report["task"]["terrain"] == "plane (friction=0.8)"
     assert report["backend"]["name"] == "pybullet"
     assert report["score"] == 1.0
     assert report["improvement"] is None
@@ -75,6 +76,32 @@ def test_build_report_without_creature_json(tmp_path):
     assert report["diagnosis"] == {"patterns": [], "suggestions": [], "metrics": {}}
     # No creature.json means the reproduce command can't reference it.
     assert report["reproducibility"]["command"] is None
+
+
+def test_build_report_describes_non_flat_terrain(tmp_path):
+    runs_dir = tmp_path / "runs"
+    sloped_task = TaskSpec.model_validate(
+        {
+            "name": "slope_climb",
+            "duration": 1.0,
+            "terrain": {"type": "slope", "slope_angle": 0.2, "friction": 1.0},
+        }
+    )
+    run_dir = save_run(_creature(), _trace(), runs_dir=runs_dir, task=sloped_task)
+
+    report = build_report(run_dir)
+
+    assert report["task"]["terrain"] == "slope (angle=0.2 rad, friction=1)"
+
+
+def test_build_report_terrain_is_none_without_a_task(tmp_path):
+    runs_dir = tmp_path / "runs"
+    run_dir = save_run(_creature(), _trace(), runs_dir=runs_dir, task=_task())
+    (run_dir / "task.json").unlink()
+
+    report = build_report(run_dir)
+
+    assert report["task"]["terrain"] is None
 
 
 def test_build_report_picks_up_evolve_lineage(tmp_path):
@@ -144,6 +171,7 @@ def test_report_to_markdown_renders_all_sections(tmp_path):
     markdown = report_to_markdown(build_report(run_dir))
 
     assert "# Creature Lab Run Report: run1" in markdown
+    assert "- Terrain: plane (friction=0.8)" in markdown
     assert "## Score Breakdown" in markdown
     assert "## Signals" in markdown
     assert "## Diagnostics" in markdown

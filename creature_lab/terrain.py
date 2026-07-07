@@ -23,6 +23,24 @@ def is_flat(terrain: TerrainSpec) -> bool:
     return terrain.type == TerrainType.PLANE
 
 
+def describe_terrain(terrain: TerrainSpec) -> str:
+    """One-line human-readable summary, e.g. for `inspect` and run reports."""
+    friction = f"friction={terrain.friction:g}"
+    if terrain.type == TerrainType.PLANE:
+        return f"plane ({friction})"
+    if terrain.type == TerrainType.SLOPE:
+        return f"slope (angle={terrain.slope_angle:g} rad, {friction})"
+    if terrain.type == TerrainType.STEPS:
+        return (
+            f"steps (height={terrain.step_height:g}m, length={terrain.step_length:g}m, {friction})"
+        )
+    if terrain.type == TerrainType.GAPS:
+        return f"gaps (width={terrain.gap_width:g}m, period={terrain.gap_period:g}m, {friction})"
+    if terrain.type == TerrainType.ROUGH:
+        return f"rough (roughness={terrain.roughness:g}m, seed={terrain.seed}, {friction})"
+    raise ValueError(f"unknown terrain type {terrain.type!r}")  # pragma: no cover
+
+
 def heightfield_grid(
     terrain: TerrainSpec,
     *,

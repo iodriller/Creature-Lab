@@ -85,6 +85,7 @@ physics behavior is backend-dependent.
 - [Roadmap](docs/ROADMAP.md) - MVP status and future product priorities.
 - [Improvement Plan (2026 H2)](docs/IMPROVEMENT_PLAN_2026.md) - report upgrade and next feature phases.
 - [Changelog](CHANGELOG.md) - notable changes by release.
+- [Known Issues](docs/KNOWN_ISSUES.md) - latent gaps and deliberate limitations found in review.
 - [Archived plans](docs/archive/) - historical planning and audit notes.
 
 ## Advanced

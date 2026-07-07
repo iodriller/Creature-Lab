@@ -1006,6 +1006,8 @@ def inspect(
     ] = False,
 ) -> None:
     """Print a detailed diagnostic summary of a saved run."""
+    from creature_lab.terrain import describe_terrain
+
     trace = _load_spec(_resolve_trace_path(path, runs_dir), EpisodeTrace)
     task = _load_task_for_trace(path, None, runs_dir)
     summary = summarize_episode(trace, task)
@@ -1018,6 +1020,7 @@ def inspect(
                 "task": trace.task_name,
                 "backend": trace.backend,
                 "score": trace.score,
+                "terrain": describe_terrain(task.terrain) if task is not None else None,
                 "summary": summary.model_dump(),
                 "meta": meta.model_dump() if meta else None,
             }
@@ -1039,6 +1042,8 @@ def inspect(
         row("timestep / seed", f"{meta.timestep} / {meta.seed}")
     else:
         row("metadata", "[yellow]none (legacy trace)[/yellow]")
+    if task is not None:
+        row("terrain", describe_terrain(task.terrain))
     row("frames / duration (s)", f"{summary.frame_count} / {summary.duration:.2f}")
     row("final score", f"{summary.final_score:.4f}")
     if summary.component_scores:

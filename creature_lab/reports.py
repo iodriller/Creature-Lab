@@ -10,6 +10,7 @@ from creature_lab.diagnostics import summarize_episode
 from creature_lab.hashing import spec_hash
 from creature_lab.runs import DEFAULT_RUNS_DIR, resolve_run_path
 from creature_lab.schema import AgentTrace, CreatureSpec, EpisodeTrace, TaskSpec
+from creature_lab.terrain import describe_terrain
 
 
 def _load_json(path: Path) -> dict[str, Any] | None:
@@ -138,6 +139,7 @@ def build_report(path: Path, runs_dir: Path = DEFAULT_RUNS_DIR) -> dict[str, Any
         "task": {
             "name": trace.task_name,
             "hash": task_hash,
+            "terrain": describe_terrain(task.terrain) if task is not None else None,
         },
         "backend": {
             "name": trace.backend,
@@ -211,6 +213,7 @@ def report_to_markdown(report: dict[str, Any]) -> str:
         "",
         f"- Creature: {creature['name']} ({_format_value(creature['hash'])})",
         f"- Task: {task['name']} ({_format_value(task['hash'])})",
+        f"- Terrain: {_format_value(task.get('terrain'))}",
         f"- Backend: {backend['name']} ({_format_value(backend['version'])})",
         f"- Score: {_format_value(report['score'])}",
         f"- Frames: {summary['frame_count']} over {_format_value(summary['duration'])} s",

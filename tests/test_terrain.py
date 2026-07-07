@@ -6,6 +6,7 @@ import pytest
 
 from creature_lab.schema.task import TerrainSpec
 from creature_lab.terrain import (
+    describe_terrain,
     flatten_for_heightfield_api,
     height_at,
     heightfield_grid,
@@ -115,3 +116,20 @@ def test_height_at_clamps_out_of_range_coordinates():
     far = height_at(terrain, 1000.0, 1000.0)
     edge = height_at(terrain, 3.15, 0.0)
     assert far == edge
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"type": "plane"},
+        {"type": "slope", "slope_angle": 0.2},
+        {"type": "steps", "step_height": 0.05, "step_length": 0.4},
+        {"type": "gaps", "gap_width": 0.2, "gap_period": 1.0},
+        {"type": "rough", "roughness": 0.03, "seed": 2},
+    ],
+)
+def test_describe_terrain_mentions_the_type_and_friction(kwargs):
+    terrain = TerrainSpec(**kwargs, friction=0.7)
+    description = describe_terrain(terrain)
+    assert kwargs["type"] in description
+    assert "friction=0.7" in description

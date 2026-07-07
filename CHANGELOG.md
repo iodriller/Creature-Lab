@@ -39,6 +39,19 @@ the complete MVP.
   baseline, even when benchmarking MuJoCo — this silently made the pass/fail threshold
   wrong for every non-default-backend benchmark run).
 
+- **Terrain fidelity in viewer/export/report**: `view`, `compare`, `export`, and the run
+  report's embedded GIF now draw the *actual* terrain shape (a `trimesh` heightfield mesh
+  in the Viser viewer, a PyBullet heightfield body in `render_trace`) instead of always a
+  flat floor. Found in a post-implementation review: the terrain physics was correct but
+  every visualization still showed a flat plane, so a `slope_climb`/`gap_cross` replay
+  misleadingly showed the creature floating above or sinking into nothing.
+- **Terrain surfaced in reports/inspect**: `creature_lab/terrain.describe_terrain()` gives
+  a one-line summary (e.g. `"slope (angle=0.2 rad, friction=1)"`), now shown by `inspect`
+  and included in every run report (Markdown, HTML, and JSON) — previously a report gave
+  no indication of which terrain a run used.
+- `docs/KNOWN_ISSUES.md`: a living list of latent gaps and deliberate limitations found in
+  review, so findings have a home instead of being re-discovered or lost.
+
 ### Fixed
 
 - `bench --zoo --backend mujoco` compared results against the PyBullet baseline (a much

@@ -61,6 +61,7 @@ def test_report_to_html_has_no_external_urls_and_key_sections(tmp_path):
     assert "https://" not in page
     assert "Score breakdown" in page
     assert "Reproducibility" in page
+    assert "terrain: plane (friction=0.8)" in page
     assert page.count("<svg") >= 3  # 3 signal sparklines + the root-path plot
 
 

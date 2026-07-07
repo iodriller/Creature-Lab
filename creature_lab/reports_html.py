@@ -313,6 +313,7 @@ baseline spec.</p>
   Creature <strong>{_escape(creature_info["name"])}</strong>
   (<code>{_escape(creature_info["hash"])}</code>) on task
   <strong>{_escape(task_info["name"])}</strong> (<code>{_escape(task_info["hash"])}</code>)
+  &middot; terrain: {_escape(task_info.get("terrain"))}
   &middot; backend {_escape(backend["name"])} {_escape(backend["version"])}
 </p>
 <div class="card">
