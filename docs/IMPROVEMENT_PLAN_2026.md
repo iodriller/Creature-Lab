@@ -306,19 +306,22 @@ CI builds the wheel and runs the smoke path against the installed package.
 
 ## Sequencing & effort
 
-| Phase | Theme | New commands / outputs | Effort | Depends on |
+| Phase | Theme | New commands / outputs | Effort | Status |
 | --- | --- | --- | --- | --- |
-| **R** | Report upgrade (HTML, compare, reproducibility, gallery) | `report --html`, `report compare`, `gallery` HTML | **Medium** | — |
-| 1 | Terrain library | terrain `TaskSpec` field, 3 zoo tasks | Medium | — |
-| 2 | Robustness / portability report | `robustness`, `sim2sim` | Medium | R (report sink), backends |
-| 3 | QD gallery | `archive show`, `archive export` | Small–Med | existing MAP-Elites, R |
-| 4 | LLM loop sharpened | `evolve --strategy llm`, diagnosis-in-prompt | Medium | diagnosis, agents |
-| 5 | Packaging & trust | PyPI wheel, baselines, changelog | Medium | all |
+| **R** | Report upgrade (HTML, compare, reproducibility, gallery) | `report --html`, `report compare`, `gallery` HTML | **Medium** | ✅ |
+| 1 | Terrain library | terrain `TaskSpec` field, 3 zoo tasks | Medium | ✅ |
+| 2 | Robustness / portability report | `robustness`, `sim2sim` | Medium | ✅ |
+| 3 | QD gallery | `archive show`, `archive export` | Small–Med | ✅ |
+| 4 | LLM loop sharpened | `evolve --strategy llm`, diagnosis-in-prompt | Medium | ✅ |
+| 5 | Packaging & trust | PyPI wheel, baselines, changelog | Medium | ✅ (PyPI publish needs a maintainer) |
 
-**Start at Phase R.** It's the user's explicit ask, it's pure composition of existing
-capabilities (low risk), and Phases 2–4 all plug their results *into* it — so building the
-report first makes every later phase visibly pay off. Each phase is independently shippable
-and gated by its own acceptance criteria and a green `ruff` + `pytest`.
+**All six phases shipped** (2026-07-07): 314 tests passing (up from 223 at the start of this
+plan), `ruff check`/`ruff format --check` clean throughout. Each phase was committed and
+pushed independently, gated by its own acceptance criteria. The one item deliberately left
+undone is the actual `pypi.org` publish — that needs a maintainer's real credentials, not
+something an agent session should hold or request; everything else that publish depends on
+(the wheel builds correctly, packaged data works standalone, baselines are trustworthy) is
+verified.
 
 ---
 
