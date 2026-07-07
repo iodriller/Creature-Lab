@@ -259,6 +259,32 @@ def report_to_html(
             if improvement.get("goal"):
                 improvement_html += f"<p class='meta'>Goal: {_escape(improvement['goal'])}</p>"
 
+    robustness = report.get("robustness")
+    robustness_section = ""
+    if robustness:
+        robustness_section = f"""<h2>Robustness</h2>
+<p>{len(robustness["trials"])} seeded trial(s) with small mass/friction jitter around the
+baseline spec.</p>
+<p>
+  Score: mean {_fmt(robustness["mean_score"])}, std {_fmt(robustness["std_score"])},
+  range [{_fmt(robustness["min_score"])}, {_fmt(robustness["max_score"])}] &middot;
+  Fail rate: {robustness["fail_rate"]:.0%}
+</p>
+"""
+
+    sim2sim = report.get("sim2sim")
+    sim2sim_section = ""
+    if sim2sim:
+        gap_class = "ok" if sim2sim["score_gap"] < 0.1 else "warn"
+        sim2sim_section = f"""<h2>Sim2Sim</h2>
+<p>
+  PyBullet score: {_fmt(sim2sim["pybullet"]["score"])} &middot;
+  MuJoCo score: {_fmt(sim2sim["mujoco"]["score"])} &middot;
+  <span class="{gap_class}">gap: {_fmt(sim2sim["score_gap"])}</span>
+</p>
+<p>Mean root-position divergence: {_fmt(sim2sim["mean_root_divergence"])} m.</p>
+"""
+
     artifacts_html = "".join(
         f"<li><code>{_escape(name)}</code>: <code>{_escape(value)}</code></li>"
         for name, value in report["artifacts"].items()
@@ -308,6 +334,8 @@ def report_to_html(
 <h2>Improvement</h2>
 {improvement_html}
 
+{robustness_section}
+{sim2sim_section}
 <h2>Reproducibility</h2>
 {_reproducibility_html(report.get("reproducibility") or {})}
 

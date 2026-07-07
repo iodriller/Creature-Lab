@@ -101,6 +101,7 @@ These features are available, but they are not needed for the first run:
 | Ask for validated design edits | `uv run creature-lab ask "make it crawl farther" examples/tripod.json --task examples/crawl_forward.json --offline` |
 | Generate new creature specs | `uv run creature-lab scaffold worm --out worm.json --segments 6` |
 | Compare or plot runs | `uv run creature-lab compare runs/<a> runs/<b> --html diff.html` / `uv run creature-lab plot runs/<run-id>` |
+| Check robustness / cross-backend gap | `uv run creature-lab robustness runs/<id> --trials 10` / `uv run creature-lab sim2sim runs/<id>` |
 | MuJoCo backend | `uv sync --extra mujoco`, then `uv run creature-lab run ... --backend mujoco` |
 | URDF/MJCF bridge | `export-urdf`, `export-mjcf`, and `import-urdf` |
 | Gymnasium-style control | `creature_lab.env.CreatureEnv` |

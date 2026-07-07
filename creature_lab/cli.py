@@ -1150,6 +1150,185 @@ def compare(
 
 
 @app.command(rich_help_panel="Advanced")
+def robustness(
+    path: Annotated[
+        Path,
+        typer.Argument(help="Path to a run directory or `latest` (needs creature.json+task.json)."),
+    ],
+    trials: Annotated[int, typer.Option(help="Number of perturbed re-simulations.")] = 10,
+    seed: Annotated[int, typer.Option(help="Base seed; trial i uses seed + i.")] = 0,
+    mass_jitter: Annotated[
+        float, typer.Option(help="Max fractional per-part mass perturbation.")
+    ] = 0.05,
+    friction_jitter: Annotated[
+        float, typer.Option(help="Max fractional terrain-friction perturbation.")
+    ] = 0.05,
+    backend: Annotated[str, typer.Option(help="Physics backend: 'pybullet' or 'mujoco'.")] = (
+        "pybullet"
+    ),
+    controller: Annotated[
+        str, typer.Option(help="Open-loop controller: 'sinusoid' or 'cpg'.")
+    ] = "sinusoid",
+    save: Annotated[
+        bool,
+        typer.Option(help="Save a new run (trace.json + robustness.json) under --runs-dir."),
+    ] = False,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory used when resolving `latest`, and to save --save runs.")
+    ] = DEFAULT_RUNS_DIR,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable results.")
+    ] = False,
+) -> None:
+    """Re-simulate a creature/task under small seeded mass/friction perturbations.
+
+    Reveals gaits that only work for the exact recorded body/terrain parameters: a wide
+    score spread or a high fail rate means the result is fragile, not robust.
+    """
+    from creature_lab.robustness import run_trials
+
+    creature = _load_creature_for_trace(path, None, runs_dir)
+    task_spec = _load_task_for_trace(path, None, runs_dir)
+    if task_spec is None:
+        console.print("[red]error:[/red] no task.json found for this run")
+        raise typer.Exit(code=2)
+
+    def evaluate(trial_creature: CreatureSpec, trial_task: TaskSpec) -> tuple[float, bool]:
+        trace = _simulate(trial_creature, trial_task, backend=backend, controller=controller)
+        return trace.score, bool(summarize_episode(trace, trial_task).fell)
+
+    result = run_trials(
+        creature,
+        task_spec,
+        evaluate,
+        trials=trials,
+        seed=seed,
+        mass_jitter=mass_jitter,
+        friction_jitter=friction_jitter,
+    )
+
+    payload = {
+        "creature": creature.name,
+        "task": task_spec.name,
+        "trials": [
+            {
+                "seed": t.seed,
+                "score": t.score,
+                "fell": t.fell,
+                "mass_scale": t.mass_scale,
+                "friction_scale": t.friction_scale,
+            }
+            for t in result.trials
+        ],
+        "mean_score": result.mean_score,
+        "std_score": result.std_score,
+        "min_score": result.min_score,
+        "max_score": result.max_score,
+        "fail_rate": result.fail_rate,
+    }
+
+    if save:
+        baseline_trace = _simulate(creature, task_spec, backend=backend, controller=controller)
+        run_dir = save_run(creature, baseline_trace, runs_dir=runs_dir, task=task_spec)
+        (run_dir / "robustness.json").write_text(json.dumps(payload, indent=2))
+        console.print(f"[green]saved[/green] robustness run -> {run_dir}")
+
+    if json_output:
+        _print_json(payload)
+        return
+
+    table = Table(title=f"robustness: {creature.name!r} on {task_spec.name!r} ({trials} trial(s))")
+    table.add_column("seed", justify="right")
+    table.add_column("score", justify="right")
+    table.add_column("fell")
+    for t in result.trials:
+        table.add_row(str(t.seed), f"{t.score:.4f}", "yes" if t.fell else "no")
+    console.print(table)
+    console.print(
+        f"mean={result.mean_score:.4f} std={result.std_score:.4f} "
+        f"min={result.min_score:.4f} max={result.max_score:.4f} "
+        f"fail_rate={result.fail_rate:.0%}"
+    )
+
+
+@app.command(rich_help_panel="Advanced")
+def sim2sim(
+    path: Annotated[
+        Path,
+        typer.Argument(help="Path to a run directory or `latest` (needs creature.json+task.json)."),
+    ],
+    controller: Annotated[
+        str, typer.Option(help="Open-loop controller: 'sinusoid' or 'cpg'.")
+    ] = "sinusoid",
+    save: Annotated[
+        bool, typer.Option(help="Save a new run (trace.json + sim2sim.json) under --runs-dir.")
+    ] = False,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory used when resolving `latest`, and to save --save runs.")
+    ] = DEFAULT_RUNS_DIR,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable results.")
+    ] = False,
+) -> None:
+    """Run the same creature/task on PyBullet and MuJoCo and report the score/trajectory gap.
+
+    Specs and traces are portable; exact physics is backend-dependent (see the README).
+    This measures how big that gap actually is for one creature/task.
+    """
+    import math
+
+    from creature_lab.viewers.overlays import root_path
+
+    creature = _load_creature_for_trace(path, None, runs_dir)
+    task_spec = _load_task_for_trace(path, None, runs_dir)
+    if task_spec is None:
+        console.print("[red]error:[/red] no task.json found for this run")
+        raise typer.Exit(code=2)
+
+    trace_pybullet = _simulate(creature, task_spec, backend="pybullet", controller=controller)
+    trace_mujoco = _simulate(creature, task_spec, backend="mujoco", controller=controller)
+
+    path_a = root_path(creature, trace_pybullet)
+    path_b = root_path(creature, trace_mujoco)
+    n = min(len(path_a), len(path_b))
+    divergence = sum(math.dist(path_a[i], path_b[i]) for i in range(n)) / n if n else 0.0
+    score_gap = abs(trace_pybullet.score - trace_mujoco.score)
+
+    payload = {
+        "creature": creature.name,
+        "task": task_spec.name,
+        "pybullet": {
+            "score": trace_pybullet.score,
+            "backend_version": trace_pybullet.meta.backend_version if trace_pybullet.meta else None,
+        },
+        "mujoco": {
+            "score": trace_mujoco.score,
+            "backend_version": trace_mujoco.meta.backend_version if trace_mujoco.meta else None,
+        },
+        "score_gap": score_gap,
+        "mean_root_divergence": divergence,
+    }
+
+    if save:
+        run_dir = save_run(creature, trace_pybullet, runs_dir=runs_dir, task=task_spec)
+        (run_dir / "sim2sim.json").write_text(json.dumps(payload, indent=2))
+        console.print(f"[green]saved[/green] sim2sim run -> {run_dir}")
+
+    if json_output:
+        _print_json(payload)
+        return
+
+    table = Table(title=f"sim2sim: {creature.name!r} on {task_spec.name!r}")
+    table.add_column("backend")
+    table.add_column("score", justify="right")
+    table.add_row("pybullet", f"{trace_pybullet.score:.4f}")
+    table.add_row("mujoco", f"{trace_mujoco.score:.4f}")
+    console.print(table)
+    console.print(f"score gap: {score_gap:.4f}")
+    console.print(f"mean root-position divergence: {divergence:.4f} m (top-down path, per frame)")
+
+
+@app.command(rich_help_panel="Advanced")
 def plot(
     path: Annotated[Path, typer.Argument(help="Path to a run directory (or trace.json).")],
     metric: Annotated[

@@ -80,6 +80,8 @@ def _artifact_paths(run_dir: Path) -> dict[str, str]:
         "lineage": run_dir / "lineage.json",
         "archive": run_dir / "archive.json",
         "design_trace": run_dir / "agent.json",
+        "robustness": run_dir / "robustness.json",
+        "sim2sim": run_dir / "sim2sim.json",
     }
     return {name: str(path) for name, path in names.items() if path.exists() or name == "run_dir"}
 
@@ -115,6 +117,8 @@ def build_report(path: Path, runs_dir: Path = DEFAULT_RUNS_DIR) -> dict[str, Any
         diagnosis = {"patterns": [], "suggestions": [], "metrics": {}}
 
     improvement = _lineage_summary(run_dir) or _agent_summary(run_dir)
+    robustness = _load_json(run_dir / "robustness.json")
+    sim2sim = _load_json(run_dir / "sim2sim.json")
     creature_hash = spec_hash(creature) if creature is not None else None
     task_hash = spec_hash(task) if task is not None else None
     creature_hash = creature_hash or (meta.creature_hash if meta else None)
@@ -144,6 +148,8 @@ def build_report(path: Path, runs_dir: Path = DEFAULT_RUNS_DIR) -> dict[str, Any
         "warnings": summary.warnings,
         "diagnosis": diagnosis,
         "improvement": improvement,
+        "robustness": robustness,
+        "sim2sim": sim2sim,
         "reproducibility": {
             "schema_version": meta.schema_version if meta else None,
             "lab_version": meta.lab_version if meta else None,
@@ -266,6 +272,36 @@ def report_to_markdown(report: dict[str, Any]) -> str:
             )
             if improvement.get("goal"):
                 lines.append(f"- Goal: {improvement['goal']}")
+
+    robustness = report.get("robustness")
+    if robustness:
+        lines.extend(
+            [
+                "",
+                "## Robustness",
+                f"- {len(robustness['trials'])} seeded trial(s) "
+                f"(mass/friction jitter around the baseline spec).",
+                f"- Score: mean {_format_value(robustness['mean_score'])}, "
+                f"std {_format_value(robustness['std_score'])}, "
+                f"range [{_format_value(robustness['min_score'])}, "
+                f"{_format_value(robustness['max_score'])}].",
+                f"- Fail rate: {robustness['fail_rate']:.0%}.",
+            ]
+        )
+
+    sim2sim = report.get("sim2sim")
+    if sim2sim:
+        lines.extend(
+            [
+                "",
+                "## Sim2Sim",
+                f"- PyBullet score: {_format_value(sim2sim['pybullet']['score'])} "
+                f"vs. MuJoCo score: {_format_value(sim2sim['mujoco']['score'])} "
+                f"(gap {_format_value(sim2sim['score_gap'])}).",
+                f"- Mean root-position divergence: "
+                f"{_format_value(sim2sim['mean_root_divergence'])} m.",
+            ]
+        )
 
     repro = report.get("reproducibility") or {}
     lines.extend(

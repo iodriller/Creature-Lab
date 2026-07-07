@@ -134,6 +134,100 @@ def test_gallery_build_cards_without_media(tmp_path):
     assert "http://" not in page and "https://" not in page
 
 
+def test_robustness_cli_json_smoke(tmp_path):
+    pytest.importorskip("pybullet")
+    runs_dir = tmp_path / "runs"
+    run_dir = save_run(_creature(), _trace(), runs_dir=runs_dir, task=_task())
+
+    result = runner.invoke(
+        app,
+        [
+            "robustness",
+            str(run_dir),
+            "--trials",
+            "2",
+            "--seed",
+            "0",
+            "--runs-dir",
+            str(runs_dir),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert len(payload["trials"]) == 2
+    assert payload["mean_score"] is not None
+    assert 0.0 <= payload["fail_rate"] <= 1.0
+
+
+def test_robustness_cli_save_writes_a_reportable_run(tmp_path):
+    pytest.importorskip("pybullet")
+    runs_dir = tmp_path / "runs"
+    save_runs_dir = tmp_path / "robustness_runs"
+    run_dir = save_run(_creature(), _trace(), runs_dir=runs_dir, task=_task())
+
+    result = runner.invoke(
+        app,
+        [
+            "robustness",
+            str(run_dir),
+            "--trials",
+            "2",
+            "--save",
+            "--runs-dir",
+            str(save_runs_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    saved_run_dirs = [p for p in save_runs_dir.iterdir() if p.is_dir()]
+    assert len(saved_run_dirs) == 1
+    assert (saved_run_dirs[0] / "robustness.json").exists()
+
+    report_result = runner.invoke(app, ["report", str(saved_run_dirs[0]), "--json"])
+    payload = json.loads(report_result.stdout)
+    assert payload["robustness"] is not None
+    assert payload["robustness"]["mean_score"] is not None
+
+
+def test_sim2sim_cli_json_smoke(tmp_path):
+    pytest.importorskip("pybullet")
+    pytest.importorskip("mujoco")
+    runs_dir = tmp_path / "runs"
+    run_dir = save_run(_creature(), _trace(), runs_dir=runs_dir, task=_task())
+
+    result = runner.invoke(app, ["sim2sim", str(run_dir), "--runs-dir", str(runs_dir), "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert "pybullet" in payload and "mujoco" in payload
+    assert payload["score_gap"] >= 0.0
+    assert payload["mean_root_divergence"] >= 0.0
+
+
+def test_sim2sim_cli_save_writes_a_reportable_run(tmp_path):
+    pytest.importorskip("pybullet")
+    pytest.importorskip("mujoco")
+    runs_dir = tmp_path / "runs"
+    save_runs_dir = tmp_path / "sim2sim_runs"
+    run_dir = save_run(_creature(), _trace(), runs_dir=runs_dir, task=_task())
+
+    result = runner.invoke(
+        app, ["sim2sim", str(run_dir), "--save", "--runs-dir", str(save_runs_dir)]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    saved_run_dirs = [p for p in save_runs_dir.iterdir() if p.is_dir()]
+    assert len(saved_run_dirs) == 1
+    assert (saved_run_dirs[0] / "sim2sim.json").exists()
+
+    html_out = tmp_path / "report.html"
+    report_result = runner.invoke(app, ["report", str(saved_run_dirs[0]), "--html", str(html_out)])
+    assert report_result.exit_code == 0, report_result.stdout
+    assert "Sim2Sim" in html_out.read_text()
+
+
 def test_zoo_list_json():
     result = runner.invoke(app, ["zoo", "list", "--json"])
 

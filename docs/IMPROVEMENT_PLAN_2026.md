@@ -168,7 +168,18 @@ fires sensibly. Tests cover terrain construction + determinism.
 
 ---
 
-## Phase 2 — Robustness & portability report (leans into the core promise)
+## Phase 2 — Robustness & portability report (leans into the core promise) ✅
+
+**Status (2026-07-07):** Shipped. `creature_lab/robustness.py` (pure, same
+callback-injection pattern as `evolve.py`) perturbs part masses and terrain friction under
+a seeded RNG and computes trial statistics. CLI: `robustness runs/<id> --trials N` and
+`sim2sim runs/<id>` (PyBullet vs. MuJoCo score gap + mean root-position divergence via
+`viewers/overlays.root_path`); both support `--save` to write a reportable run, and
+`build_report`/`report_to_markdown`/`report_to_html` render an optional Robustness/Sim2Sim
+section when present. Running `sim2sim` on the packaged quadruped surfaced a real, large
+gap (PyBullet 0.57 vs. MuJoCo ≈0.00 for the same open-loop gait) — exactly the kind of
+overfit-to-one-engine result this phase exists to surface, not hide. 20 new tests; full
+suite green (296 passing), ruff clean.
 
 **Why:** "Specs, tasks, traces are portable; exact physics is backend-dependent" is Creature
 Lab's stated contract, but nothing *measures* it. This is a differentiator no competitor has.
