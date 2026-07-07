@@ -1,0 +1,14 @@
+{
+  "creature": "worm",
+  "task": "crawl_forward",
+  "backend": "mujoco 3.10.0",
+  "best_score": -0.0409,
+  "score_summary": {
+    "forward": -0.0409,
+    "target": 0.0,
+    "energy": -0.0,
+    "fall": 0.0,
+    "total": -0.0409
+  },
+  "note": "open-loop sinusoid controller baseline (MuJoCo backend)"
+}

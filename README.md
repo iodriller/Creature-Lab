@@ -84,6 +84,7 @@ physics behavior is backend-dependent.
 - [CLI Reference](docs/CLI_REFERENCE.md) - commands grouped by workflow.
 - [Roadmap](docs/ROADMAP.md) - MVP status and future product priorities.
 - [Improvement Plan (2026 H2)](docs/IMPROVEMENT_PLAN_2026.md) - report upgrade and next feature phases.
+- [Changelog](CHANGELOG.md) - notable changes by release.
 - [Archived plans](docs/archive/) - historical planning and audit notes.
 
 ## Advanced

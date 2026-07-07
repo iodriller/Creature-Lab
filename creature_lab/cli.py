@@ -658,7 +658,7 @@ def bench(
             scores.append(trace.score)
             run_dirs.append(str(run_dir))
 
-        baseline = zoo_baseline(name, task_name)
+        baseline = zoo_baseline(name, task_name, backend=backend)
         baseline_score = baseline.get("best_score") if baseline else None
         threshold = None
         passed = None

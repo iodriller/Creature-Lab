@@ -55,6 +55,20 @@ def test_quadruped_terrain_tasks_have_a_calibrated_baseline(task_name):
     assert baseline["best_score"] > 0
 
 
+def test_zoo_baseline_backend_selects_the_suffixed_file():
+    pybullet_baseline = zoo_baseline("quadruped", "crawl_forward")
+    mujoco_baseline = zoo_baseline("quadruped", "crawl_forward", backend="mujoco")
+
+    assert pybullet_baseline is not None
+    assert mujoco_baseline is not None
+    assert "pybullet" in pybullet_baseline["backend"]
+    assert "mujoco" in mujoco_baseline["backend"]
+
+
+def test_zoo_baseline_missing_backend_returns_none():
+    assert zoo_baseline("quadruped", "crawl_forward", backend="nonexistent") is None
+
+
 def test_zoo_creature_unknown_name_raises():
     with pytest.raises(KeyError, match="unknown zoo creature"):
         zoo_creature("dragon")

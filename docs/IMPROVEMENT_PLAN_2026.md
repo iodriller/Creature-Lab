@@ -266,7 +266,27 @@ the report. Tests stay network-free via the mock/offline policy.
 
 ---
 
-## Phase 5 — Packaging & trust (make it installable and current)
+## Phase 5 — Packaging & trust (make it installable and current) ✅ (minus PyPI publish)
+
+**Status (2026-07-07):** Done except the one item that genuinely requires a human: publishing
+to PyPI needs real maintainer credentials, which an agent session neither has nor should
+request — that step is left for a maintainer to run (`uv build && uv publish` once
+`UV_PUBLISH_TOKEN` is set). Everything else is verified:
+- Built the wheel (`uv build`), diffed its contents against the source tree — all zoo
+  creatures/tasks/**baselines** (including the new terrain tasks) are packaged correctly.
+- Installed the wheel into a **clean venv outside the checkout**, ran `creature-lab zoo run
+  quadruped --task slope_climb` from an unrelated directory: score matched the committed
+  baseline **exactly** (0.21575877349436093), and `report --html` worked with `[sim,export]`
+  installed.
+- Computed and committed a real, measured **MuJoCo baseline for all 17 zoo creature/task
+  pairs** (`baselines/<task>.mujoco.json`) — previously baselines existed for PyBullet only.
+  `zoo_baseline(..., backend=...)` picks the right file.
+- **Found and fixed a real bug** surfaced by this: `bench --zoo --backend mujoco` was
+  comparing MuJoCo scores against the *PyBullet* baseline regardless of `--backend` — every
+  non-default-backend benchmark had a silently wrong pass/fail threshold. Now fixed and
+  regression-tested.
+- Added `CHANGELOG.md` and linked it from `README.md` and `pyproject.toml`.
+- 6 new tests; full suite green, ruff clean.
 
 **Why:** `docs/ROADMAP.md` already flags this and it gates adoption more than any feature.
 

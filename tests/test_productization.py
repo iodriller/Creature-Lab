@@ -269,3 +269,34 @@ def test_bench_zoo_json_smoke(tmp_path):
     assert payload["kind"] == "zoo_benchmark"
     assert payload["results"]
     assert (runs_dir / "latest.txt").exists()
+
+
+def test_bench_zoo_mujoco_backend_compares_against_the_mujoco_baseline(tmp_path):
+    pytest.importorskip("mujoco")
+    runs_dir = tmp_path / "runs"
+
+    result = runner.invoke(
+        app,
+        [
+            "bench",
+            "--zoo",
+            "--task",
+            "crawl_forward",
+            "--backend",
+            "mujoco",
+            "--attempts",
+            "1",
+            "--seed",
+            "0",
+            "--runs-dir",
+            str(runs_dir),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    quadruped_result = next(r for r in payload["results"] if r["creature"] == "quadruped")
+    # The MuJoCo baseline is close to zero; the (much higher) PyBullet baseline would
+    # wrongly fail this near-zero MuJoCo score against a ~0.9 threshold.
+    assert quadruped_result["baseline_score"] == pytest.approx(-0.0027, abs=1e-3)
