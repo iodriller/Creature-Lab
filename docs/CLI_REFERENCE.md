@@ -56,12 +56,16 @@ Useful options:
 ```bash
 uv run creature-lab build --preset humanoid
 uv run creature-lab build mydude.json --out mydude.json
+uv run creature-lab build --project outputs/mydude
 uv run creature-lab run examples/quadruped.json --task examples/crawl_forward.json
 uv run creature-lab evolve examples/quadruped.json --task examples/crawl_forward.json --attempts 20
 uv run creature-lab ask "make it crawl farther" examples/tripod.json --task examples/crawl_forward.json --offline
 ```
 
-- `build` edits a CreatureSpec in a Viser browser UI, then saves JSON or simulates directly.
+- `build` edits a CreatureSpec (or URDF) in a Viser browser UI: tune it, read live metrics and a
+  robustness sweep after Simulate, then save. `--project <dir>` binds it to `creature.json`/
+  `task.json` in that directory, autosaving edits and detecting external changes with a Reload
+  prompt (see `docs/BUILD_EDITOR.md`).
 - `run` simulates one creature/task pair.
 - `evolve` searches for a better body/controller. `--strategy llm` uses the validated agent
   tool layer (offline by default) as the mutation operator instead of the structural
@@ -128,7 +132,9 @@ environment checks. They are intentionally outside the first-run path.
 - `robustness` re-simulates a creature/task under small seeded mass/friction perturbations
   and reports the score mean/std/fail-rate — a wide spread means the gait only works for the
   exact recorded parameters. Add `--save` to write a reportable run (`report <dir>` then
-  shows a Robustness section).
+  shows a Robustness section). The same engine is available as a **Robustness** panel inside
+  `creature-lab build` (see `docs/BUILD_EDITOR.md`), run directly against the in-editor
+  creature without saving a run first.
 - `sim2sim` runs the same creature/task on both PyBullet and MuJoCo and reports the score gap
   and mean root-position divergence — a concrete measure of the "specs are portable, physics
   is backend-dependent" contract. Add `--save` for a reportable run.

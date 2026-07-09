@@ -475,6 +475,17 @@ def build(
         str,
         typer.Option(help="Task preset when --task is not supplied."),
     ] = "crawl_forward",
+    project: Annotated[
+        Path | None,
+        typer.Option(
+            "--project",
+            help=(
+                "Bind to a project directory: creature.json/task.json there are loaded on "
+                "start and kept live-synced with the editor (autosave on edit, external "
+                "edits detected with a Reload prompt). Overrides --preset/creature_path/--task."
+            ),
+        ),
+    ] = None,
     controller: Annotated[
         str, typer.Option(help="Open-loop controller for Simulate: 'sinusoid' or 'cpg'.")
     ] = "sinusoid",
@@ -515,7 +526,10 @@ def build(
         if task is not None
         else editor_presets.generate_task(task_preset)
     )
-    if creature_path is not None:
+    if project is not None:
+        session = EditorSession(template=preset, task=task_spec, out_path=out)
+        session.bind_project(project)
+    elif creature_path is not None:
         session = EditorSession.from_path(creature_path, task=task_spec, out_path=out)
     else:
         session = EditorSession(

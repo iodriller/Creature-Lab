@@ -10,13 +10,17 @@ from typing import Any
 
 import numpy as np
 
+from creature_lab.diagnostics import summarize_episode
 from creature_lab.editor.controls import BuildControls
 from creature_lab.editor.session import EditorSession
+from creature_lab.robustness import RobustnessResult, run_trials
 from creature_lab.runs import DEFAULT_RUNS_DIR, save_run
 from creature_lab.schema import CreatureSpec, EpisodeTrace, TaskSpec
 from creature_lab.viewers.viser_viewer import apply_frame, build_scene, remove_scene
 
 SimulateFn = Callable[[CreatureSpec, TaskSpec], EpisodeTrace]
+SimulateResult = tuple[str, EpisodeTrace | None]
+RobustnessRunResult = tuple[str, RobustnessResult | None]
 
 
 class EditorPreview:
@@ -103,6 +107,7 @@ class EditorPreview:
 
     def _move_selected_anchor(self, position: tuple[float, float, float]) -> None:
         self.session.move_selected_anchor_to(tuple(float(value) for value in position))
+        self.session.autosave()
         self.refresh()
         self.on_change()
 
@@ -134,26 +139,54 @@ def run_editor(
 
     preview = EditorPreview(server, session, on_select=select_part, on_change=scene_changed)
 
-    def simulate_current() -> str:
+    def simulate_current() -> SimulateResult:
         status = session.status()
         if not status.ok:
-            return "Fix validation errors before simulating."
+            return "Fix validation errors before simulating.", None
         trace = simulate(session.creature, session.task)
         run_dir = save_run(session.creature, trace, runs_dir=runs_dir, task=session.task)
         preview.animate(trace)
-        return f"Simulated score={trace.score:.4f}; saved {run_dir}"
+        return f"Simulated score={trace.score:.4f}; saved {run_dir}", trace
+
+    def run_robustness_sweep(
+        trials: int, mass_jitter: float, friction_jitter: float
+    ) -> RobustnessRunResult:
+        status = session.status()
+        if not status.ok:
+            return "Fix validation errors before running a robustness sweep.", None
+
+        def evaluate(trial_creature: CreatureSpec, trial_task: TaskSpec) -> tuple[float, bool]:
+            trace = simulate(trial_creature, trial_task)
+            return trace.score, bool(summarize_episode(trace, trial_task).fell)
+
+        result = run_trials(
+            session.creature,
+            session.task,
+            evaluate,
+            trials=trials,
+            mass_jitter=mass_jitter,
+            friction_jitter=friction_jitter,
+        )
+        message = (
+            f"Robustness ({trials} trials): mean={result.mean_score:.4f} "
+            f"std={result.std_score:.4f} fail_rate={result.fail_rate:.0%}"
+        )
+        return message, result
 
     controls_holder["controls"] = BuildControls(
         server.gui,
         session,
         on_preview=preview.refresh,
         on_simulate=simulate_current,
+        on_robustness=run_robustness_sweep,
     )
     preview.refresh()
 
     try:
         while True:
             time.sleep(0.25)
+            if session.poll_external_changes():
+                controls_holder["controls"].notify_external_change()
     except KeyboardInterrupt:
         pass
     finally:

@@ -2,7 +2,7 @@
 
 This guide is the shortest path from a fresh clone to a moving creature.
 
-## 1. Launch The Demo
+## 1. Launch The Build Editor
 
 Use the launcher from the repository root:
 
@@ -16,36 +16,53 @@ On Windows PowerShell:
 .\scripts\start.ps1
 ```
 
-The launcher installs the demo dependencies, runs `doctor`, opens the browser viewer, and keeps
-the creature looping until `Ctrl+C`.
+The launcher installs the starter dependencies, runs `doctor`, and opens the interactive
+**build editor** in your browser — a setup screen where you configure a creature before running
+it, instead of jumping straight into physics.
 
 What you should see:
 
-- A terminal progress log with the viewer URL.
+- A terminal progress log with the editor URL.
 - A browser tab at `http://localhost:8080` or the next free port.
-- A moving quadruped in the Viser scene.
+- A quadruped preset in the 3D preview, with sliders to tune it, a template picker, part/motor
+  editing, and a **Simulate** button that runs the existing physics pipeline once you're happy
+  with the setup.
+- After Simulate: a **Metrics** panel (score, displacement, root-cause failure diagnosis) and a
+  **Robustness** panel (re-simulate under seeded mass/friction perturbations) right there in the
+  same tab — no separate CLI commands needed to see how the run went.
 
-For a one-pass smoke run:
+Pick a different starting preset:
 
 ```bash
-python scripts/start.py --once
+python scripts/start.py --creature humanoid
 ```
 
-## 2. Manual Demo
+Presets are `quadruped`, `hexapod`, `worm`, or `humanoid`. Add `--project outputs/mydude` (via
+`uv run creature-lab build --project outputs/mydude`) to bind the editor to a directory whose
+`creature.json`/`task.json` autosave on every edit and stay in sync if you edit them by hand. See
+[`docs/BUILD_EDITOR.md`](BUILD_EDITOR.md) for the full editor walkthrough.
+
+## 2. Just Want The Old Playback Demo?
+
+```bash
+python scripts/start.py --mode demo
+```
+
+or manually:
 
 ```bash
 uv sync --inexact --extra sim --extra viz
 uv run creature-lab demo --open-browser
 ```
 
-The `sim` extra installs PyBullet. The `viz` extra installs the browser viewer. The default demo
-runs the built-in quadruped on the built-in `crawl_forward` task. Add `--no-hold` if you want
-the command to save a trace and exit after one pass.
+The `sim` extra installs PyBullet. The `viz` extra installs the browser viewer. The demo runs the
+built-in quadruped on the built-in `crawl_forward` task with no setup step. Add `--no-hold` if
+you want the command to save a trace and exit after one pass.
 
 Use a different built-in creature:
 
 ```bash
-python scripts/start.py --creature worm
+python scripts/start.py --mode demo --creature worm
 uv run creature-lab demo --creature worm --no-hold
 uv run creature-lab demo --creature tripod --no-hold
 ```
@@ -64,16 +81,13 @@ Each saved run updates `runs/latest.txt`, which lets follow-up commands accept `
 
 ## 4. Improve One Creature
 
-Build or tune a creature visually:
+Reopen the build editor on a specific preset any time (this is what step 1 launches by default):
 
 ```bash
 uv run creature-lab build --preset humanoid
 ```
 
-The build editor opens in the browser, starts from a preset, lets you tune body and motor
-parameters, validates the creature/task pair, and saves a normal CreatureSpec JSON.
-
-Then improve a saved creature with the local evolution loop:
+Once you've saved a creature you like from the editor, improve it with the local evolution loop:
 
 ```bash
 uv run creature-lab evolve examples/quadruped.json --task examples/crawl_forward.json --attempts 20

@@ -4,14 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PORT = 8080
+VENV_DIR = ROOT / ".venv"
 
 
 def check_python() -> None:
@@ -32,6 +35,18 @@ def print_header(title: str) -> None:
     print(f"\n== {title} ==", flush=True)
 
 
+def format_exit_code(code: int) -> str:
+    """Render a subprocess exit code readably.
+
+    Windows reports an interrupted/killed process as -1, which Python's SystemExit
+    then surfaces to the shell as the unsigned wraparound 4294967295 - meaningless
+    to a reader. Call this out explicitly instead of printing the raw number.
+    """
+    if code in (-1, 0xFFFFFFFF):
+        return "interrupted"
+    return str(code)
+
+
 def run_step(
     title: str,
     command: list[str],
@@ -39,7 +54,7 @@ def run_step(
     dry_run: bool = False,
     failure_hint: str,
 ) -> None:
-    """Run one setup/launch step with readable context and failure hints."""
+    """Run one setup/check step with readable context and failure hints."""
     print_header(title)
     print(f"$ {command_text(command)}", flush=True)
     if dry_run:
@@ -52,9 +67,179 @@ def run_step(
         print(failure_hint, file=sys.stderr)
         raise SystemExit(127) from exc
     except subprocess.CalledProcessError as exc:
-        print(f"\nThe '{title}' step failed with exit code {exc.returncode}.", file=sys.stderr)
+        print(
+            f"\nThe '{title}' step failed with exit code {format_exit_code(exc.returncode)}.",
+            file=sys.stderr,
+        )
         print(failure_hint, file=sys.stderr)
-        raise SystemExit(exc.returncode) from exc
+        raise SystemExit(exc.returncode if 0 <= exc.returncode < 256 else 1) from exc
+
+
+def _terminate_tree(proc: subprocess.Popen) -> None:
+    """Force-kill a process and everything it spawned.
+
+    `uv run creature-lab demo` is itself a chain (uv -> creature-lab.exe -> the
+    viser server); Popen.terminate() only signals the immediate child, which can
+    leave grandchildren running. On Windows those orphans keep an exclusive lock
+    on files under .venv, breaking the next `uv sync`. `taskkill /T` kills the
+    whole tree; on other platforms a plain terminate/kill is enough since we run
+    without a shell and there's no equivalent orphaning.
+    """
+    if proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
+def run_launch_step(
+    command: list[str], *, title: str = "Launch viewer", dry_run: bool, failure_hint: str
+) -> None:
+    """Run the long-lived viewer/editor process, guaranteeing its tree is cleaned up.
+
+    Unlike `run_step`, this uses Popen directly so a Ctrl+C (or a hung/crashed
+    child) always goes through `_terminate_tree` in `finally` - see its docstring
+    for why that matters.
+    """
+    print_header(title)
+    print(f"$ {command_text(command)}", flush=True)
+    if dry_run:
+        return
+
+    try:
+        proc = subprocess.Popen(command, cwd=ROOT)
+    except FileNotFoundError as exc:
+        print(f"\nCould not find executable: {command[0]}", file=sys.stderr)
+        print(failure_hint, file=sys.stderr)
+        raise SystemExit(127) from exc
+
+    returncode: int | None = None
+    try:
+        returncode = proc.wait()
+    except KeyboardInterrupt:
+        returncode = None
+    finally:
+        _terminate_tree(proc)
+
+    if returncode is None:
+        print("\nStopped Creature Lab.")
+        return
+    if returncode != 0:
+        print(
+            f"\nThe {title!r} step failed with exit code {format_exit_code(returncode)}.",
+            file=sys.stderr,
+        )
+        print(failure_hint, file=sys.stderr)
+        raise SystemExit(returncode if 0 <= returncode < 256 else 1)
+
+
+def _is_interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def _confirm(prompt: str) -> bool:
+    if not _is_interactive():
+        return False
+    try:
+        answer = input(f"{prompt} [y/N] ").strip().lower()
+    except EOFError:
+        return False
+    return answer in ("y", "yes")
+
+
+def find_stray_venv_processes() -> list[tuple[int, str]]:
+    """Windows only: processes still running from this project's .venv.
+
+    Windows locks an .exe/.dll while it runs, so a process orphaned by a previous
+    interrupted launch (see `_terminate_tree`) can make `uv sync` fail with
+    "os error 32" on the next run. This gives the sync step something concrete to
+    detect and offer to clean up instead of a bare file-in-use error.
+    """
+    if sys.platform != "win32":
+        return []
+    venv_str = str(VENV_DIR).replace("'", "''")
+    script = (
+        "Get-Process | Where-Object { $_.Path -and "
+        "$_.Path.StartsWith('" + venv_str + "', [System.StringComparison]::OrdinalIgnoreCase) } "
+        "| Select-Object Id, Path | ConvertTo-Json -Compress"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    try:
+        data = json.loads(result.stdout)
+    except ValueError:
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    processes: list[tuple[int, str]] = []
+    for item in data:
+        pid = item.get("Id")
+        if pid is not None:
+            processes.append((int(pid), str(item.get("Path", ""))))
+    return processes
+
+
+def clear_stray_processes(processes: list[tuple[int, str]]) -> None:
+    for pid, _ in processes:
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, check=False)
+    time.sleep(0.5)  # give Windows a beat to release the file handles
+
+
+def run_sync_step(uv: list[str], sync_args: list[str], *, dry_run: bool, auto_yes: bool) -> None:
+    """Install dependencies, recovering automatically from a stray-process file lock."""
+    hint = (
+        "Dependency installation failed. Check your network connection and Python "
+        "version, then try `uv sync --inexact --extra sim --extra viz` manually."
+    )
+    try:
+        run_step("Install dependencies", [*uv, *sync_args], dry_run=dry_run, failure_hint=hint)
+    except SystemExit:
+        if dry_run or sys.platform != "win32":
+            raise
+        stray = find_stray_venv_processes()
+        if not stray:
+            raise
+        print(
+            "\nA previous Creature Lab viewer looks like it is still running and has "
+            "a file in .venv locked:",
+            file=sys.stderr,
+        )
+        for pid, path in stray:
+            print(f"  PID {pid}: {path}", file=sys.stderr)
+        if auto_yes or _confirm("Stop the process(es) above and retry install?"):
+            clear_stray_processes(stray)
+            run_step(
+                "Install dependencies (retry)",
+                [*uv, *sync_args],
+                dry_run=dry_run,
+                failure_hint=hint,
+            )
+        else:
+            print(
+                "Stop them manually (e.g. `Stop-Process -Id <PID> -Force`) and rerun, "
+                "or pass --yes to do this automatically.",
+                file=sys.stderr,
+            )
+            raise
 
 
 def uv_command(explicit: str | None) -> list[str]:
@@ -120,14 +305,27 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument(
+        "--mode",
+        choices=["build", "demo"],
+        default="build",
+        help=(
+            "What to launch: the interactive build/setup screen where you configure a "
+            "creature before running it (default), or the read-only demo playback viewer."
+        ),
+    )
+    parser.add_argument(
         "--creature",
         default="quadruped",
-        help="Built-in creature to demo: quadruped, worm, or tripod. Default: quadruped.",
+        help=(
+            "Starting point. In --mode build: a preset (quadruped, hexapod, worm, "
+            "humanoid). In --mode demo: a built-in creature (quadruped, worm, tripod). "
+            "Default: quadruped."
+        ),
     )
     parser.add_argument(
         "--creature-path",
         type=Path,
-        help="Path to a CreatureSpec JSON file. Overrides --creature.",
+        help="Path to a CreatureSpec JSON file to open/edit. Overrides --creature.",
     )
     parser.add_argument("--task", type=Path, help="Optional TaskSpec JSON path.")
     parser.add_argument("--port", type=int, help="Viser server port. Default: 8080.")
@@ -169,6 +367,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--uv", help="Path to a uv executable.")
     parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help=(
+            "Automatically confirm recovery actions (e.g. stopping a stray previous "
+            "viewer process that is locking .venv) without prompting."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the commands without running them.",
@@ -192,10 +399,11 @@ def main() -> None:
     port = choose_port(args.port or DEFAULT_PORT, explicit=requested_port)
     url = f"http://localhost:{port}"
 
+    label = "Build editor" if args.mode == "build" else "Demo viewer"
     print("Creature Lab starter")
     print(f"Repository: {ROOT}")
-    print(f"Viewer URL: {url}")
-    print("Press Ctrl+C in this terminal to stop the viewer.")
+    print(f"{label} URL: {url}")
+    print("Press Ctrl+C in this terminal to stop.")
 
     if not args.skip_sync:
         sync_args = (
@@ -210,15 +418,7 @@ def main() -> None:
                 "viz",
             ]
         )
-        run_step(
-            "Install dependencies",
-            [*uv, *sync_args],
-            dry_run=args.dry_run,
-            failure_hint=(
-                "Dependency installation failed. Check your network connection and Python "
-                "version, then try `uv sync --inexact --extra sim --extra viz` manually."
-            ),
-        )
+        run_sync_step(uv, sync_args, dry_run=args.dry_run, auto_yes=args.yes)
 
     if not args.skip_doctor:
         run_step(
@@ -231,27 +431,41 @@ def main() -> None:
             ),
         )
 
-    demo_command = [*uv, "run", "creature-lab", "demo", "--port", str(port)]
-    if args.open_browser:
-        demo_command.append("--open-browser")
-    else:
+    if not args.open_browser:
         print(f"Open this URL manually after launch: {url}")
 
-    if args.creature_path:
-        demo_command.append(str(args.creature_path))
+    if args.mode == "build":
+        launch_command = [*uv, "run", "creature-lab", "build", "--port", str(port)]
+        launch_command.append("--open-browser" if args.open_browser else "--no-open-browser")
+        if args.creature_path:
+            launch_command.append(str(args.creature_path))
+        else:
+            launch_command.extend(["--preset", args.creature])
+        if args.task:
+            launch_command.extend(["--task", str(args.task)])
+        if not args.hold:
+            print("note: --once/--no-hold only applies to --mode demo; ignoring for build.")
+        title = "Launch build editor"
     else:
-        demo_command.extend(["--creature", args.creature])
-    if args.task:
-        demo_command.extend(["--task", str(args.task)])
-    if not args.hold:
-        demo_command.append("--no-hold")
+        launch_command = [*uv, "run", "creature-lab", "demo", "--port", str(port)]
+        if args.open_browser:
+            launch_command.append("--open-browser")
+        if args.creature_path:
+            launch_command.append(str(args.creature_path))
+        else:
+            launch_command.extend(["--creature", args.creature])
+        if args.task:
+            launch_command.extend(["--task", str(args.task)])
+        if not args.hold:
+            launch_command.append("--no-hold")
+        title = "Launch demo viewer"
 
-    run_step(
-        "Launch viewer",
-        demo_command,
+    run_launch_step(
+        launch_command,
+        title=title,
         dry_run=args.dry_run,
         failure_hint=(
-            f"The viewer failed to launch. Try `python scripts/start.py --port {port + 1}` "
+            f"Launch failed. Try `python scripts/start.py --port {port + 1}` "
             "or run `uv run creature-lab doctor` for details."
         ),
     )

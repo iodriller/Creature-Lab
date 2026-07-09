@@ -6,8 +6,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from creature_lab.diagnosis import diagnose
+from creature_lab.diagnostics import summarize_episode
 from creature_lab.editor import presets
 from creature_lab.editor.session import EditorSession
+from creature_lab.robustness import RobustnessResult
+from creature_lab.schema import EpisodeTrace
 from creature_lab.schema.creature import ShapeType
 
 
@@ -20,18 +24,27 @@ class BuildControls:
         session: EditorSession,
         *,
         on_preview: Callable[[], None],
-        on_simulate: Callable[[], str],
+        on_simulate: Callable[[], tuple[str, EpisodeTrace | None]],
+        on_robustness: Callable[[int, float, float], tuple[str, RobustnessResult | None]],
     ) -> None:
         self.gui = gui
         self.session = session
         self.on_preview = on_preview
         self.on_simulate = on_simulate
+        self.on_robustness = on_robustness
         self._body_folder: Any | None = None
         self._part_folder: Any | None = None
         self._motion_folder: Any | None = None
         self._task_folder: Any | None = None
+        self._metrics_folder: Any | None = None
+        self._robustness_folder: Any | None = None
         self._message: Any | None = None
         self._simulate_button: Any | None = None
+        self._reload_button: Any | None = None
+        self._robustness_button: Any | None = None
+        self._robustness_result_md: Any | None = None
+        self._last_trace: EpisodeTrace | None = None
+        self._last_robustness: RobustnessResult | None = None
         self._build()
 
     def _build(self) -> None:
@@ -68,9 +81,10 @@ class BuildControls:
             )
 
             load_path = self.gui.add_text(
-                "Open JSON",
+                "Open path",
                 str(self.session.source_path or self.session.out_path),
-                hint="Path to an existing CreatureSpec JSON.",
+                hint="A .json CreatureSpec, or a .urdf to import (best-effort; meshes/"
+                "sensors are skipped and reported as warnings).",
             )
             open_button = self.gui.add_button("Open", icon="folder-open")
             open_button.on_click(
@@ -84,11 +98,12 @@ class BuildControls:
             )
 
             save_path = self.gui.add_text(
-                "Save JSON",
+                "Save path",
                 str(self.session.out_path),
-                hint="CreatureSpec output path.",
+                hint="Extension picks the format: .json (CreatureSpec), .urdf, or .xml/.mjcf "
+                "(MJCF export is one-way; it cannot be re-opened here).",
             )
-            save_button = self.gui.add_button("Save JSON", icon="device-floppy")
+            save_button = self.gui.add_button("Save", icon="device-floppy")
             save_button.on_click(
                 lambda _event: self._safe(
                     lambda: self.session.save(Path(save_path.value)),
@@ -98,6 +113,19 @@ class BuildControls:
                     rebuild_task=False,
                 )
             )
+
+            if self.session.project_dir is not None:
+                self.gui.add_markdown(f"**Project (live-synced):** `{self.session.project_dir}`")
+                self._reload_button = self.gui.add_button("Reload from disk", icon="refresh-dot")
+                self._reload_button.on_click(
+                    lambda _event: self._safe(
+                        self.session.reload_project,
+                        rebuild_body=True,
+                        rebuild_part=True,
+                        rebuild_motion=True,
+                        rebuild_task=True,
+                    )
+                )
 
         self._rebuild_body_controls()
         self._rebuild_part_controls()
@@ -110,6 +138,8 @@ class BuildControls:
             self._simulate_button = self.gui.add_button("Simulate", icon="player-play")
             self._simulate_button.on_click(lambda _event: self._simulate())
             self._message = self.gui.add_markdown("")
+        self._rebuild_metrics_controls()
+        self._rebuild_robustness_controls()
         self._update_status()
 
     def scene_selected(self, part_id: str) -> None:
@@ -124,6 +154,10 @@ class BuildControls:
     def scene_changed(self) -> None:
         self._update_status()
 
+    def notify_external_change(self) -> None:
+        """Called when the bound project's creature.json/task.json changed on disk."""
+        self._update_status()
+
     def _safe(
         self,
         operation: Callable[[], Any],
@@ -135,6 +169,7 @@ class BuildControls:
     ) -> None:
         try:
             operation()
+            self.session.autosave()
         except Exception as exc:
             self.session.last_message = f"Error: {exc}"
         self._refresh(
@@ -517,26 +552,137 @@ class BuildControls:
         if self._simulate_button is not None:
             self._simulate_button.disabled = True
         try:
-            self.session.last_message = self.on_simulate()
+            self.session.last_message, self._last_trace = self.on_simulate()
         except Exception as exc:
             self.session.last_message = f"Simulation failed: {exc}"
+            self._last_trace = None
         finally:
             if self._simulate_button is not None:
                 self._simulate_button.disabled = False
+            self._rebuild_metrics_controls()
             self._update_status()
+
+    def _rebuild_metrics_controls(self) -> None:
+        self._remove_folder("_metrics_folder")
+        self._metrics_folder = self.gui.add_folder("Metrics", expand_by_default=True)
+        with self._metrics_folder:
+            if self._last_trace is None:
+                self.gui.add_markdown(
+                    "Run **Simulate** to see score, displacement, and failure diagnosis here."
+                )
+                return
+            trace = self._last_trace
+            summary = summarize_episode(trace, self.session.task)
+            result = diagnose(trace, self.session.creature, self.session.task)
+
+            lines = [
+                f"- Score: **{summary.final_score:.4f}**",
+                f"- Duration: {summary.duration:.2f}s ({summary.frame_count} frames)",
+                f"- Forward displacement: {summary.forward_displacement:+.3f} m",
+                f"- Net displacement: {summary.net_displacement:.3f} m",
+                f"- Joint motion (Σ|Δrad|): {summary.total_joint_motion:.1f}",
+            ]
+            if summary.target_progress is not None:
+                lines.append(f"- Target progress: {summary.target_progress:+.3f} m")
+            if summary.fell is not None:
+                lines.append(f"- Fell: {'yes' if summary.fell else 'no'}")
+            if summary.component_scores:
+                breakdown = ", ".join(
+                    f"{key}={value:.3f}" for key, value in summary.component_scores.items()
+                )
+                lines.append(f"- Score breakdown: {breakdown}")
+            self.gui.add_markdown("\n".join(lines))
+
+            if result.patterns:
+                pattern_lines = ["**Diagnosis**"]
+                for pattern, explanation, suggestion in zip(
+                    result.patterns, result.explanations, result.suggestions, strict=True
+                ):
+                    pattern_lines.append(f"- **{pattern}**: {explanation}")
+                    pattern_lines.append(f"  - Suggestion: {suggestion}")
+                self.gui.add_markdown("\n".join(pattern_lines))
+            else:
+                self.gui.add_markdown("No failure patterns detected - this run looks healthy.")
+
+            if summary.warnings:
+                self.gui.add_markdown(
+                    "**Warnings**\n" + "\n".join(f"- {warning}" for warning in summary.warnings)
+                )
+
+    def _rebuild_robustness_controls(self) -> None:
+        self._remove_folder("_robustness_folder")
+        self._robustness_folder = self.gui.add_folder("Robustness", expand_by_default=False)
+        with self._robustness_folder:
+            self.gui.add_markdown(
+                "Re-simulate under small seeded mass/friction perturbations. A wide score "
+                "spread or high fail rate means the result is fragile, not robust."
+            )
+            trials_slider = self.gui.add_slider("Trials", min=2, max=50, step=1, initial_value=10)
+            mass_jitter_slider = self.gui.add_slider(
+                "Mass jitter", min=0.0, max=0.3, step=0.01, initial_value=0.05
+            )
+            friction_jitter_slider = self.gui.add_slider(
+                "Friction jitter", min=0.0, max=0.3, step=0.01, initial_value=0.05
+            )
+            self._robustness_button = self.gui.add_button("Run robustness sweep")
+            self._robustness_result_md = self.gui.add_markdown("")
+
+            def _run(_event: Any) -> None:
+                if self._robustness_button is not None:
+                    self._robustness_button.disabled = True
+                try:
+                    self.session.last_message, self._last_robustness = self.on_robustness(
+                        int(trials_slider.value),
+                        float(mass_jitter_slider.value),
+                        float(friction_jitter_slider.value),
+                    )
+                except Exception as exc:
+                    self.session.last_message = f"Robustness sweep failed: {exc}"
+                    self._last_robustness = None
+                finally:
+                    if self._robustness_button is not None:
+                        self._robustness_button.disabled = False
+                    self._render_robustness_result()
+                    self._update_status()
+
+            self._robustness_button.on_click(_run)
+            self._render_robustness_result()
+
+    def _render_robustness_result(self) -> None:
+        if self._robustness_result_md is None:
+            return
+        result = self._last_robustness
+        if result is None:
+            self._robustness_result_md.content = ""
+            return
+        lines = [
+            f"- Mean score: **{result.mean_score:.4f}** (std {result.std_score:.4f})",
+            f"- Range: {result.min_score:.4f} to {result.max_score:.4f}",
+            f"- Fail rate: {result.fail_rate:.0%}",
+        ]
+        self._robustness_result_md.content = "\n".join(lines)
 
     def _update_status(self) -> None:
         status = self.session.status()
         metrics = self.session.preview_metrics()
-        lines = [
-            f"**{self.session.last_message}**",
-            "",
-            f"- Creature: `{self.session.creature.name}`",
-            "- Parts/joints/motors: "
-            f"{int(metrics['parts'])}/{int(metrics['joints'])}/{int(metrics['motors'])}",
-            f"- CoM height: {metrics['com_z']:.2f} m",
-            f"- Support width: {metrics['support_width']:.2f} m",
-        ]
+        lines = []
+        if self.session.external_change_pending:
+            lines.append(
+                "**Files changed on disk.** Click **Reload from disk** to load them, or "
+                "make an edit here to overwrite them with your in-memory version."
+            )
+            lines.append("")
+        lines.extend(
+            [
+                f"**{self.session.last_message}**",
+                "",
+                f"- Creature: `{self.session.creature.name}`",
+                "- Parts/joints/motors: "
+                f"{int(metrics['parts'])}/{int(metrics['joints'])}/{int(metrics['motors'])}",
+                f"- CoM height: {metrics['com_z']:.2f} m",
+                f"- Support width: {metrics['support_width']:.2f} m",
+            ]
+        )
         if status.errors:
             lines.append("")
             lines.append("**Errors**")

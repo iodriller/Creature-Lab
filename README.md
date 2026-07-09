@@ -14,8 +14,9 @@ versions, and replay or export the result.
 
 ## Start Here
 
-From a fresh checkout, run one launcher. It installs the demo extras, checks the environment,
-opens the browser viewer, and keeps the creature looping until you press `Ctrl+C`.
+From a fresh checkout, run one launcher. It installs the starter extras, checks the environment,
+and opens the interactive **build editor** in your browser — configure a creature first, then
+run it, instead of jumping straight into physics.
 
 Windows PowerShell:
 
@@ -31,33 +32,35 @@ python scripts/start.py
 
 What should happen:
 
-- A terminal shows setup progress and a viewer URL such as `http://localhost:8080`.
-- Your browser opens to the live Viser viewer.
-- A quadruped starts moving and keeps replaying.
-- When you press `Ctrl+C`, the run is saved under `runs/`.
+- A terminal shows setup progress and an editor URL such as `http://localhost:8080`.
+- Your browser opens to the build editor: a template picker, live 3D preview, body/part/motor
+  sliders, and a **Simulate** button.
+- Pick a preset, tune it, click Simulate to run it through the existing physics pipeline, read
+  its score/diagnosis and a robustness sweep in the same panel, then Save to write a normal
+  `CreatureSpec` JSON (or a `.urdf`).
 
-Run one pass and exit, useful for smoke tests:
+Start from a different preset (`quadruped`, `hexapod`, `worm`, `humanoid`):
 
 ```bash
-python scripts/start.py --once
+python scripts/start.py --creature humanoid
 ```
 
-Use a different packaged creature:
+Prefer the old read-only playback demo instead of the setup screen?
 
 ```bash
-python scripts/start.py --creature worm
-```
-
-Build or tune a creature in the browser:
-
-```bash
-uv run creature-lab build
+python scripts/start.py --mode demo
 ```
 
 ## Manual Quickstart
 
 ```bash
 uv sync --inexact --extra sim --extra viz
+uv run creature-lab build
+```
+
+`build` opens the browser setup screen described above. For the plain playback demo instead:
+
+```bash
 uv run creature-lab demo --open-browser
 ```
 
@@ -110,7 +113,9 @@ uv run creature-lab export latest --gif demo.gif
 ## What You Get
 
 - A curated Creature Zoo: quadruped, worm, hexapod, tripod, damaged quadruped, and humanoids.
-- A browser build editor for presets, body sliders, part edits, motor tuning, validation, and simulation.
+- A browser build editor for presets, body sliders, part edits, motor tuning, validation,
+  simulation, live metrics/diagnosis, a robustness sweep, and URDF import/export — all in one
+  screen, with optional live file-sync to a project directory (`--project`).
 - Portable JSON specs for creatures and tasks.
 - Physics runs saved as replayable traces with metadata, hashes, scores, contacts, and warnings.
 - Local improvement loops: `evolve` for search and `ask --offline` for validated design edits.

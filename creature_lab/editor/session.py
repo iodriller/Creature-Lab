@@ -47,6 +47,49 @@ def _part_extent_z(part: PartSpec) -> float:
     return 0.05
 
 
+def _load_creature_from_path(path: Path) -> tuple[CreatureSpec, list[str]]:
+    """Load a CreatureSpec from JSON or best-effort from URDF, by file extension.
+
+    URDF import is lossy (meshes/sensors/materials are skipped, see
+    ``creature_lab.export.urdf_import``); the returned warnings surface exactly what
+    was dropped so the editor can show them instead of silently losing detail.
+    """
+    if path.suffix.lower() == ".urdf":
+        from creature_lab.export import import_urdf
+
+        result = import_urdf(path.read_text())
+        return result.creature, result.warnings
+    return CreatureSpec.model_validate(json.loads(path.read_text())), []
+
+
+def _load_message(path: Path, warnings: list[str]) -> str:
+    if not warnings:
+        return f"Loaded {path}"
+    shown = "; ".join(warnings[:3])
+    more = f" (+{len(warnings) - 3} more)" if len(warnings) > 3 else ""
+    return f"Loaded {path} with {len(warnings)} skipped feature(s): {shown}{more}"
+
+
+def _write_creature_to_path(creature: CreatureSpec, path: Path) -> None:
+    """Write a CreatureSpec as JSON, URDF, or MJCF, chosen by the file extension.
+
+    MJCF export is one-way (no MJCF importer exists yet in ``creature_lab.export``),
+    so a `.xml`/`.mjcf` path can be saved to but not opened back into the editor.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = path.suffix.lower()
+    if suffix == ".urdf":
+        from creature_lab.export import export_urdf
+
+        path.write_text(export_urdf(creature))
+    elif suffix in (".xml", ".mjcf"):
+        from creature_lab.export import export_mjcf
+
+        path.write_text(export_mjcf(creature))
+    else:
+        path.write_text(creature.model_dump_json(indent=2, exclude_none=True))
+
+
 class EditorSession:
     """Editor state that can be unit-tested without Viser or physics imports."""
 
@@ -58,6 +101,7 @@ class EditorSession:
         template: str = "quadruped",
         out_path: Path = Path("outputs/build_creature.json"),
         source_path: Path | None = None,
+        project_dir: Path | None = None,
     ) -> None:
         if creature is None:
             self.template = template
@@ -74,6 +118,12 @@ class EditorSession:
         self.selected_part_id = self.creature.parts[0].id
         self.selected_motor_id = self.creature.motors[0].joint if self.creature.motors else ""
         self.last_message = "Ready."
+        self.project_dir: Path | None = None
+        self._creature_mtime: float | None = None
+        self._task_mtime: float | None = None
+        self.external_change_pending = False
+        if project_dir is not None:
+            self.bind_project(project_dir)
 
     @classmethod
     def from_path(
@@ -83,18 +133,20 @@ class EditorSession:
         task: TaskSpec | None = None,
         out_path: Path | None = None,
     ) -> EditorSession:
-        creature = CreatureSpec.model_validate(json.loads(path.read_text()))
-        return cls(creature, task, out_path=out_path or path, source_path=path)
+        creature, warnings = _load_creature_from_path(path)
+        session = cls(creature, task, out_path=out_path or path, source_path=path)
+        session.last_message = _load_message(path, warnings)
+        return session
 
     def load_path(self, path: Path) -> None:
-        loaded = self.from_path(path, task=self.task, out_path=self.out_path)
-        self.template = loaded.template
-        self.params = loaded.params
-        self.creature = loaded.creature
+        creature, warnings = _load_creature_from_path(path)
+        self.template = "custom"
+        self.params = {}
+        self.creature = creature
         self.source_path = path
         self.selected_part_id = self.creature.parts[0].id
         self.selected_motor_id = self.creature.motors[0].joint if self.creature.motors else ""
-        self.last_message = f"Loaded {path}"
+        self.last_message = _load_message(path, warnings)
 
     def apply_template(self, template: str) -> None:
         self.template = template
@@ -391,11 +443,102 @@ class EditorSession:
 
     def save(self, path: Path | None = None) -> Path:
         target = path or self.out_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(self.creature.model_dump_json(indent=2, exclude_none=True))
+        _write_creature_to_path(self.creature, target)
         self.out_path = target
         self.last_message = f"Saved {target}"
         return target
+
+    @property
+    def creature_file(self) -> Path | None:
+        return self.project_dir / "creature.json" if self.project_dir is not None else None
+
+    @property
+    def task_file(self) -> Path | None:
+        return self.project_dir / "task.json" if self.project_dir is not None else None
+
+    def bind_project(self, project_dir: Path) -> None:
+        """Bind this session to a directory, loading creature.json/task.json if present.
+
+        Once bound, every edit autosaves back to those files (see ``autosave``) and
+        external edits to them are detected (see ``poll_external_changes``), so the
+        project directory and the UI stay in sync in both directions.
+        """
+        project_dir = Path(project_dir)
+        project_dir.mkdir(parents=True, exist_ok=True)
+        self.project_dir = project_dir
+        creature_path = project_dir / "creature.json"
+        task_path = project_dir / "task.json"
+        if creature_path.exists():
+            self.creature = CreatureSpec.model_validate(json.loads(creature_path.read_text()))
+            self.template = "custom"
+            self.params = {}
+        if task_path.exists():
+            self.task = TaskSpec.model_validate(json.loads(task_path.read_text()))
+        self.out_path = creature_path
+        self.source_path = creature_path if creature_path.exists() else None
+        self.selected_part_id = self.creature.parts[0].id
+        self.selected_motor_id = self.creature.motors[0].joint if self.creature.motors else ""
+        self._write_project_files()
+        self.external_change_pending = False
+        self.last_message = f"Bound to project {project_dir}"
+
+    def _write_project_files(self) -> None:
+        if self.project_dir is None:
+            return
+        creature_path, task_path = self.creature_file, self.task_file
+        assert creature_path is not None and task_path is not None
+        creature_path.write_text(self.creature.model_dump_json(indent=2, exclude_none=True))
+        task_path.write_text(self.task.model_dump_json(indent=2, exclude_none=True))
+        self._creature_mtime = creature_path.stat().st_mtime
+        self._task_mtime = task_path.stat().st_mtime
+
+    def autosave(self) -> None:
+        """Write the current creature/task to the bound project files, if any.
+
+        No-op when no project is bound, so it is safe to call unconditionally after
+        every edit (see ``BuildControls._safe``) without changing behaviour for the
+        plain Open/Save JSON workflow.
+        """
+        self._write_project_files()
+
+    def poll_external_changes(self) -> bool:
+        """Edge-triggered: True the moment a bound project file changes on disk.
+
+        Returns False on every call before and after that moment (call ``reload_project``
+        to clear the pending flag and resume detecting further external changes).
+        """
+        if self.project_dir is None or self.external_change_pending:
+            return False
+        creature_path, task_path = self.creature_file, self.task_file
+        assert creature_path is not None and task_path is not None
+        creature_changed = (
+            creature_path.exists() and creature_path.stat().st_mtime != self._creature_mtime
+        )
+        task_changed = task_path.exists() and task_path.stat().st_mtime != self._task_mtime
+        changed = creature_changed or task_changed
+        if changed:
+            self.external_change_pending = True
+        return changed
+
+    def reload_project(self) -> None:
+        """Reload creature/task from the bound project files, discarding in-memory edits."""
+        if self.project_dir is None:
+            self.last_message = "No project bound; nothing to reload."
+            return
+        creature_path, task_path = self.creature_file, self.task_file
+        assert creature_path is not None and task_path is not None
+        if creature_path.exists():
+            self.creature = CreatureSpec.model_validate(json.loads(creature_path.read_text()))
+            self.template = "custom"
+            self.params = {}
+        if task_path.exists():
+            self.task = TaskSpec.model_validate(json.loads(task_path.read_text()))
+        self.selected_part_id = self.creature.parts[0].id
+        self.selected_motor_id = self.creature.motors[0].joint if self.creature.motors else ""
+        self._creature_mtime = creature_path.stat().st_mtime if creature_path.exists() else None
+        self._task_mtime = task_path.stat().st_mtime if task_path.exists() else None
+        self.external_change_pending = False
+        self.last_message = "Reloaded from disk."
 
     def preview_frame(self) -> FrameState:
         child_to_joint = {joint.child: joint for joint in self.creature.joints}
