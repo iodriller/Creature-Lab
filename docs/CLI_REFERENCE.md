@@ -63,8 +63,13 @@ uv run creature-lab ask "make it crawl farther" examples/tripod.json --task exam
 
 - `build` edits a CreatureSpec in a Viser browser UI, then saves JSON or simulates directly.
 - `run` simulates one creature/task pair.
-- `evolve` searches for a better body/controller.
-- `ask` applies validated design edits, offline or with an optional LLM provider.
+- `evolve` searches for a better body/controller. `--strategy llm` uses the validated agent
+  tool layer (offline by default) as the mutation operator instead of the structural
+  body/controller mutators; each attempt's rationale is saved into `lineage.json`
+  (`creature-lab lineage <run>` shows it).
+- `ask` applies validated design edits, offline or with an optional LLM provider. Every
+  proposal now sees the current diagnosis (failure patterns + suggestions) alongside the
+  score, so an online LLM can target the actual detected problem instead of guessing blind.
 
 ## Replay And Debug
 
@@ -73,6 +78,7 @@ uv run creature-lab replay runs/<run-id>
 uv run creature-lab inspect runs/<run-id>
 uv run creature-lab diagnose runs/<run-id>
 uv run creature-lab report latest --out report.md
+uv run creature-lab report latest --html report.html
 uv run creature-lab view runs/<run-id> --open-browser
 uv run creature-lab export latest --gif creature.gif
 ```
@@ -80,7 +86,9 @@ uv run creature-lab export latest --gif creature.gif
 - `replay` prints a short trace summary.
 - `inspect` prints metadata, hashes, score components, contacts, warnings, and run metrics.
 - `diagnose` explains likely failure patterns and suggested edits.
-- `report` writes a Markdown or JSON summary with score, diagnostics, and artifact paths.
+- `report` writes a Markdown or JSON summary with score, diagnostics, artifacts, and a
+  reproducibility block. `--html` also writes a self-contained HTML run card (score
+  breakdown, signal sparklines, root-path plot, and an optional embedded GIF preview).
 - `view` replays recorded poses in the browser viewer.
 - `export` renders a recorded trace to GIF or MP4.
 
@@ -96,17 +104,34 @@ uv run creature-lab export-urdf quad.json --out quad.urdf
 uv run creature-lab export-mjcf quad.json --out quad.xml
 uv run creature-lab import-urdf robot.urdf --out robot.json
 uv run creature-lab compare runs/<a> runs/<b>
+uv run creature-lab compare runs/<a> runs/<b> --html diff.html
 uv run creature-lab plot runs/<run-id> --metric joint_energy --out energy.png
 uv run creature-lab bench --zoo --task crawl_forward --attempts 3 --out runs/bench.json
 uv run creature-lab schema creature --out docs/schemas/creature.schema.json
 uv run creature-lab gallery build --zoo --out docs/assets/zoo --no-media
 uv run creature-lab lineage runs/<evolve-run-id>
+uv run creature-lab archive show runs/<map-elites-run-id> --html archive.html
+uv run creature-lab archive export runs/<map-elites-run-id> --cell 3,2 --out elite.json
+uv run creature-lab robustness runs/<run-id> --trials 10
+uv run creature-lab sim2sim runs/<run-id>
 uv run creature-lab doctor
 uv run creature-lab version
 ```
 
 These commands are useful for authoring, interoperability, run comparison, diagnostics, and
 environment checks. They are intentionally outside the first-run path.
+
+- `archive show` (only useful after `evolve --strategy map_elites`) prints the filled
+  behaviour cells as a table, or `--html` renders a scored heatmap; add `--task` to embed a
+  replay GIF per cell. `archive export --cell row,col` pulls one elite out as a standalone,
+  editable `CreatureSpec` JSON.
+- `robustness` re-simulates a creature/task under small seeded mass/friction perturbations
+  and reports the score mean/std/fail-rate — a wide spread means the gait only works for the
+  exact recorded parameters. Add `--save` to write a reportable run (`report <dir>` then
+  shows a Robustness section).
+- `sim2sim` runs the same creature/task on both PyBullet and MuJoCo and reports the score gap
+  and mean root-position divergence — a concrete measure of the "specs are portable, physics
+  is backend-dependent" contract. Add `--save` for a reportable run.
 
 ## Machine-Readable Output
 

@@ -93,6 +93,36 @@ def test_design_loop_records_invalid_proposals():
     assert result.best == _seed()  # nothing valid was accepted
 
 
+def test_design_loop_passes_diagnosis_text_to_the_policy():
+    seen_diagnoses = []
+
+    def policy(obs: Observation) -> Proposal:
+        seen_diagnoses.append(obs.diagnosis)
+        return Proposal("set_motor", {"joint": "hinge", "amplitude": 0.6}, "note")
+
+    design_loop(
+        _seed(),
+        lambda c: 0.0,
+        policy,
+        attempts=2,
+        diagnose=lambda c: "moving_backward (flip gait phase)",
+    )
+
+    assert seen_diagnoses == ["moving_backward (flip gait phase)"] * 2
+
+
+def test_design_loop_diagnosis_defaults_to_empty_when_not_given():
+    seen = []
+
+    def policy(obs: Observation) -> Proposal:
+        seen.append(obs.diagnosis)
+        return Proposal("set_motor", {"joint": "hinge", "amplitude": 0.6}, "note")
+
+    design_loop(_seed(), lambda c: 0.0, policy, attempts=1)
+
+    assert seen == [""]
+
+
 def test_offline_policy_proposes_valid_tool_calls():
     policy = RandomToolPolicy(seed=0)
     creature = _seed()
@@ -115,6 +145,18 @@ def test_build_prompt_mentions_tools_and_goal():
     prompt = build_prompt(Observation(_seed(), 0.0, 1, goal="crawl far"))
     assert "crawl far" in prompt
     assert "set_motor" in prompt and "resize_limb" in prompt
+
+
+def test_build_prompt_includes_diagnosis_when_present():
+    prompt = build_prompt(
+        Observation(_seed(), 0.0, 1, goal="crawl far", diagnosis="moving_backward")
+    )
+    assert "diagnosed issues: moving_backward" in prompt
+
+
+def test_build_prompt_omits_diagnosis_line_when_absent():
+    prompt = build_prompt(Observation(_seed(), 0.0, 1, goal="crawl far"))
+    assert "diagnosed issues" not in prompt
 
 
 def test_parse_proposal_extracts_json_amid_prose():

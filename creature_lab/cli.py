@@ -22,6 +22,7 @@ from creature_lab.evolve import (
     cmaes,
     genetic,
     hill_climb,
+    llm_mutate,
     make_mutator,
     map_elites,
 )
@@ -571,7 +572,7 @@ def evolve(
     creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
     task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
     strategy: Annotated[
-        str, typer.Option(help="hill_climb, genetic, map_elites, or cmaes.")
+        str, typer.Option(help="hill_climb, genetic, map_elites, cmaes, or llm.")
     ] = "hill_climb",
     mutate_opt: Annotated[
         str, typer.Option("--mutate", help="What to mutate: body, controller, or body,controller.")
@@ -591,9 +592,9 @@ def evolve(
     _check_inputs(creature, task_spec)
     rng = random.Random(seed)
 
-    if strategy not in {"hill_climb", "genetic", "map_elites", "cmaes"}:
+    if strategy not in {"hill_climb", "genetic", "map_elites", "cmaes", "llm"}:
         console.print(
-            "[red]error:[/red] --strategy must be hill_climb, genetic, map_elites, or cmaes"
+            "[red]error:[/red] --strategy must be hill_climb, genetic, map_elites, cmaes, or llm"
         )
         raise typer.Exit(code=2)
 
@@ -601,13 +602,28 @@ def evolve(
     if not targets <= {"body", "controller"}:
         console.print("[red]error:[/red] --mutate must be 'body', 'controller', or both")
         raise typer.Exit(code=2)
-    mutate_fn = make_mutator("body" in targets, "controller" in targets)
+    # llm ignores --mutate: every edit goes through the validated agent tool layer instead
+    # of the structural body/controller mutators. Record each proposal's rationale (even
+    # rejected ones) so it can be saved into lineage.json for `report`/`lineage` to show.
+    llm_notes: list[str] = []
+
+    def _record_llm_note(proposal: Any) -> None:
+        llm_notes.append(f"{proposal.tool}: {proposal.note}" if proposal.note else proposal.tool)
+
+    def _llm_mutate_and_record(spec: CreatureSpec, r: random.Random) -> CreatureSpec:
+        return llm_mutate(spec, r, on_propose=_record_llm_note)
+
+    mutate_fn = (
+        _llm_mutate_and_record
+        if strategy == "llm"
+        else make_mutator("body" in targets, "controller" in targets)
+    )
 
     def evaluate(candidate: CreatureSpec) -> float:
         return _simulate(candidate, task_spec).score
 
     try:
-        if strategy == "hill_climb":
+        if strategy in ("hill_climb", "llm"):
             result = hill_climb(creature, evaluate, attempts=attempts, rng=rng, mutate_fn=mutate_fn)
         elif strategy == "genetic":
             result = genetic(creature, evaluate, attempts=attempts, rng=rng, mutate_fn=mutate_fn)
@@ -637,6 +653,11 @@ def evolve(
             "score": a.score,
             "accepted": a.accepted,
             "cell": list(a.cell) if a.cell is not None else None,
+            **(
+                {"note": llm_notes[a.index - 1]}
+                if strategy == "llm" and 0 < a.index <= len(llm_notes)
+                else {}
+            ),
         }
         for a in result.history
     ]
@@ -645,7 +666,11 @@ def evolve(
     )
     if result.archive:
         archive = {
-            f"{cell[0]},{cell[1]}": {"score": entry["score"], "features": list(entry["features"])}
+            f"{cell[0]},{cell[1]}": {
+                "score": entry["score"],
+                "features": list(entry["features"]),
+                "spec": entry["spec"].model_dump(mode="json"),
+            }
             for cell, entry in result.archive.items()
         }
         (run_dir / "archive.json").write_text(json.dumps(archive, indent=2))
@@ -744,7 +769,7 @@ def bench(
             scores.append(trace.score)
             run_dirs.append(str(run_dir))
 
-        baseline = zoo_baseline(name, task_name)
+        baseline = zoo_baseline(name, task_name, backend=backend)
         baseline_score = baseline.get("best_score") if baseline else None
         threshold = None
         passed = None
@@ -849,10 +874,118 @@ def lineage(
         for node in sorted(children.get(parent, []), key=lambda n: n["index"]):
             mark = "[green]*[/green]" if node["accepted"] else " "
             indent = "  " * depth
-            console.print(f"{indent}{mark} #{node['index']} score={node['score']:.4f}")
+            suffix = f" - {node['note']}" if node.get("note") else ""
+            console.print(f"{indent}{mark} #{node['index']} score={node['score']:.4f}{suffix}")
             render(node["index"], depth + 1)
 
     render(None, 0)
+
+
+archive_app = typer.Typer(help="Inspect and export cells from a MAP-Elites archive.")
+app.add_typer(archive_app, name="archive", rich_help_panel="Advanced")
+
+
+def _load_archive(path: Path) -> dict[str, Any]:
+    archive_path = path / "archive.json" if path.is_dir() else path
+    if not archive_path.exists():
+        console.print(f"[red]error:[/red] no archive.json at {archive_path}")
+        raise typer.Exit(code=2)
+    return json.loads(archive_path.read_text())
+
+
+@archive_app.command("show")
+def archive_show(
+    path: Annotated[
+        Path, typer.Argument(help="Path to a map_elites evolve run directory (or archive.json).")
+    ],
+    html_out: Annotated[
+        Path | None,
+        typer.Option("--html", help="Write a visual heatmap instead of printing a table."),
+    ] = None,
+    task: Annotated[
+        Path | None,
+        typer.Option(help="TaskSpec JSON to render a replay GIF per cell (needs --html)."),
+    ] = None,
+    width: Annotated[int, typer.Option(help="Per-cell GIF width in pixels.")] = 160,
+    height: Annotated[int, typer.Option(help="Per-cell GIF height in pixels.")] = 120,
+) -> None:
+    """Show a MAP-Elites archive: a ranked table, or --html for a scored heatmap."""
+    archive = _load_archive(path)
+
+    if html_out is not None:
+        from creature_lab.reports_html import archive_to_html
+
+        cell_gifs: dict[str, str] = {}
+        if task is not None:
+            import base64
+            import tempfile
+
+            try:
+                from creature_lab.backends.pybullet_backend import render_trace
+                from creature_lab.viewers.video_exporter import write_animation
+            except ImportError as exc:
+                console.print(
+                    "[red]error:[/red] --task GIFs need `uv sync --extra sim --extra export`."
+                )
+                raise typer.Exit(code=2) from exc
+            task_spec = _load_spec(task, TaskSpec)
+            # Embed as data: URIs (like the run report's GIF) so the page stays a single
+            # self-contained file instead of depending on a sibling directory of images.
+            with tempfile.TemporaryDirectory() as tmp:
+                for cell_key, entry in archive.items():
+                    cell_creature = CreatureSpec.model_validate(entry["spec"])
+                    trace = _simulate(cell_creature, task_spec)
+                    gif_path = Path(tmp) / f"{cell_key.replace(',', '_')}.gif"
+                    frames = render_trace(
+                        cell_creature, trace, task=task_spec, width=width, height=height
+                    )
+                    write_animation(frames, gif_path)
+                    encoded = base64.b64encode(gif_path.read_bytes()).decode("ascii")
+                    cell_gifs[cell_key] = f"data:image/gif;base64,{encoded}"
+
+        html_out.parent.mkdir(parents=True, exist_ok=True)
+        html_out.write_text(archive_to_html(archive, cell_gifs=cell_gifs))
+        console.print(f"[green]wrote[/green] archive heatmap -> {html_out}")
+        return
+
+    table = Table(title=f"archive: {len(archive)} filled cell(s)")
+    table.add_column("cell")
+    table.add_column("score", justify="right")
+    table.add_column("features")
+    for cell_key, entry in sorted(archive.items(), key=lambda kv: -kv[1]["score"]):
+        features = ", ".join(f"{f:.3f}" for f in entry["features"])
+        table.add_row(cell_key, f"{entry['score']:.4f}", features)
+    console.print(table)
+
+
+@archive_app.command("export")
+def archive_export(
+    path: Annotated[
+        Path, typer.Argument(help="Path to a map_elites evolve run directory (or archive.json).")
+    ],
+    cell: Annotated[
+        str, typer.Option(help="Cell key as 'row,col' (see `archive show`), e.g. '3,2'.")
+    ],
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output CreatureSpec JSON path.")],
+) -> None:
+    """Export one MAP-Elites archive cell as a standalone, editable CreatureSpec JSON."""
+    archive = _load_archive(path)
+    entry = archive.get(cell)
+    if entry is None:
+        available = ", ".join(sorted(archive)) or "(none)"
+        console.print(f"[red]error:[/red] unknown cell {cell!r}; choose one of: {available}")
+        raise typer.Exit(code=2)
+    if "spec" not in entry:
+        console.print(
+            "[red]error:[/red] this archive.json has no stored spec "
+            "(from before `archive export` support); re-run `evolve --strategy map_elites`."
+        )
+        raise typer.Exit(code=2)
+
+    creature = CreatureSpec.model_validate(entry["spec"])
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(creature.model_dump_json(indent=2))
+    console.print(f"[green]exported[/green] cell {cell!r} (score={entry['score']:.4f}) -> {out}")
 
 
 @app.command(rich_help_panel="Run And Improve")
@@ -902,6 +1035,17 @@ def ask(
             raise typer.Exit(code=2) from exc
         policy = LLMPolicy(model=model)
 
+    def diagnose_fn(candidate: CreatureSpec) -> str:
+        from creature_lab.diagnosis import diagnose as run_diagnosis
+
+        result = run_diagnosis(_simulate(candidate, task_spec), candidate, task_spec)
+        if not result.patterns:
+            return ""
+        return "; ".join(
+            f"{pattern} ({suggestion})" if suggestion else pattern
+            for pattern, suggestion in zip(result.patterns, result.suggestions, strict=True)
+        )
+
     result = design_loop(
         creature,
         lambda candidate: _simulate(candidate, task_spec).score,
@@ -909,6 +1053,7 @@ def ask(
         attempts=attempts,
         goal=goal,
         task_name=task_spec.name,
+        diagnose=diagnose_fn,
     )
 
     best_trace = _simulate(result.best, task_spec, seed=seed)
@@ -977,6 +1122,8 @@ def inspect(
     ] = False,
 ) -> None:
     """Print a detailed diagnostic summary of a saved run."""
+    from creature_lab.terrain import describe_terrain
+
     trace = _load_spec(_resolve_trace_path(path, runs_dir), EpisodeTrace)
     task = _load_task_for_trace(path, None, runs_dir)
     summary = summarize_episode(trace, task)
@@ -989,6 +1136,7 @@ def inspect(
                 "task": trace.task_name,
                 "backend": trace.backend,
                 "score": trace.score,
+                "terrain": describe_terrain(task.terrain) if task is not None else None,
                 "summary": summary.model_dump(),
                 "meta": meta.model_dump() if meta else None,
             }
@@ -1010,6 +1158,8 @@ def inspect(
         row("timestep / seed", f"{meta.timestep} / {meta.seed}")
     else:
         row("metadata", "[yellow]none (legacy trace)[/yellow]")
+    if task is not None:
+        row("terrain", describe_terrain(task.terrain))
     row("frames / duration (s)", f"{summary.frame_count} / {summary.duration:.2f}")
     row("final score", f"{summary.final_score:.4f}")
     if summary.component_scores:
@@ -1039,6 +1189,10 @@ def report(
     out: Annotated[
         Path | None, typer.Option("--out", "-o", help="Write the report here instead of stdout.")
     ] = None,
+    html_out: Annotated[
+        Path | None,
+        typer.Option("--html", help="Also write a self-contained HTML run report here."),
+    ] = None,
     runs_dir: Annotated[
         Path, typer.Option(help="Directory used when resolving the `latest` alias.")
     ] = DEFAULT_RUNS_DIR,
@@ -1047,13 +1201,23 @@ def report(
     ] = False,
 ) -> None:
     """Generate a concise run report with score, diagnostics, and artifact paths."""
-    from creature_lab.reports import build_report, report_to_markdown
+    from creature_lab.reports import build_report, build_report_bundle, report_to_markdown
 
     try:
-        data = build_report(path, runs_dir=runs_dir)
+        if html_out is not None:
+            data, trace, creature, task_spec = build_report_bundle(path, runs_dir=runs_dir)
+        else:
+            data = build_report(path, runs_dir=runs_dir)
     except FileNotFoundError as exc:
         console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(code=2) from exc
+
+    if html_out is not None:
+        from creature_lab.reports_html import report_to_html
+
+        html_out.parent.mkdir(parents=True, exist_ok=True)
+        html_out.write_text(report_to_html(data, trace, creature, task_spec))
+        console.print(f"[green]wrote[/green] HTML report -> {html_out}")
 
     rendered = (
         json.dumps(data, indent=2, sort_keys=True) if json_output else report_to_markdown(data)
@@ -1062,6 +1226,8 @@ def report(
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(rendered)
         console.print(f"[green]wrote[/green] report -> {out}")
+        return
+    if html_out is not None:
         return
     _write_stdout(rendered)
 
@@ -1199,11 +1365,43 @@ def compare(
             help="Open the local viewer URL in the default browser.",
         ),
     ] = False,
+    html_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--html", help="Write a before/after comparison report instead of opening Viser."
+        ),
+    ] = None,
     runs_dir: Annotated[
         Path, typer.Option(help="Directory used when resolving bare run ids or `latest`.")
     ] = DEFAULT_RUNS_DIR,
 ) -> None:
-    """Replay two saved runs side by side in one Viser scene."""
+    """Replay two saved runs side by side in one Viser scene, or diff their reports."""
+    if html_out is not None:
+        from creature_lab.reports import build_comparison, build_report_bundle
+        from creature_lab.reports_html import comparison_to_html
+
+        try:
+            report_a, trace_a, creature_a, _task_a = build_report_bundle(run_a, runs_dir=runs_dir)
+            report_b, trace_b, creature_b, _task_b = build_report_bundle(run_b, runs_dir=runs_dir)
+        except FileNotFoundError as exc:
+            console.print(f"[red]error:[/red] {exc}")
+            raise typer.Exit(code=2) from exc
+        comparison = build_comparison(report_a, report_b)
+        html_out.parent.mkdir(parents=True, exist_ok=True)
+        html_out.write_text(
+            comparison_to_html(
+                report_a,
+                report_b,
+                comparison,
+                creature_a=creature_a,
+                trace_a=trace_a,
+                creature_b=creature_b,
+                trace_b=trace_b,
+            )
+        )
+        console.print(f"[green]wrote[/green] comparison report -> {html_out}")
+        return
+
     trace_a = _load_spec(_resolve_trace_path(run_a, runs_dir), EpisodeTrace)
     trace_b = _load_spec(_resolve_trace_path(run_b, runs_dir), EpisodeTrace)
     creature_a = _load_creature_for_trace(run_a, None, runs_dir)
@@ -1233,6 +1431,185 @@ def compare(
         port=port,
         open_browser=open_browser,
     )
+
+
+@app.command(rich_help_panel="Advanced")
+def robustness(
+    path: Annotated[
+        Path,
+        typer.Argument(help="Path to a run directory or `latest` (needs creature.json+task.json)."),
+    ],
+    trials: Annotated[int, typer.Option(help="Number of perturbed re-simulations.")] = 10,
+    seed: Annotated[int, typer.Option(help="Base seed; trial i uses seed + i.")] = 0,
+    mass_jitter: Annotated[
+        float, typer.Option(help="Max fractional per-part mass perturbation.")
+    ] = 0.05,
+    friction_jitter: Annotated[
+        float, typer.Option(help="Max fractional terrain-friction perturbation.")
+    ] = 0.05,
+    backend: Annotated[str, typer.Option(help="Physics backend: 'pybullet' or 'mujoco'.")] = (
+        "pybullet"
+    ),
+    controller: Annotated[
+        str, typer.Option(help="Open-loop controller: 'sinusoid' or 'cpg'.")
+    ] = "sinusoid",
+    save: Annotated[
+        bool,
+        typer.Option(help="Save a new run (trace.json + robustness.json) under --runs-dir."),
+    ] = False,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory used when resolving `latest`, and to save --save runs.")
+    ] = DEFAULT_RUNS_DIR,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable results.")
+    ] = False,
+) -> None:
+    """Re-simulate a creature/task under small seeded mass/friction perturbations.
+
+    Reveals gaits that only work for the exact recorded body/terrain parameters: a wide
+    score spread or a high fail rate means the result is fragile, not robust.
+    """
+    from creature_lab.robustness import run_trials
+
+    creature = _load_creature_for_trace(path, None, runs_dir)
+    task_spec = _load_task_for_trace(path, None, runs_dir)
+    if task_spec is None:
+        console.print("[red]error:[/red] no task.json found for this run")
+        raise typer.Exit(code=2)
+
+    def evaluate(trial_creature: CreatureSpec, trial_task: TaskSpec) -> tuple[float, bool]:
+        trace = _simulate(trial_creature, trial_task, backend=backend, controller=controller)
+        return trace.score, bool(summarize_episode(trace, trial_task).fell)
+
+    result = run_trials(
+        creature,
+        task_spec,
+        evaluate,
+        trials=trials,
+        seed=seed,
+        mass_jitter=mass_jitter,
+        friction_jitter=friction_jitter,
+    )
+
+    payload = {
+        "creature": creature.name,
+        "task": task_spec.name,
+        "trials": [
+            {
+                "seed": t.seed,
+                "score": t.score,
+                "fell": t.fell,
+                "mass_scale": t.mass_scale,
+                "friction_scale": t.friction_scale,
+            }
+            for t in result.trials
+        ],
+        "mean_score": result.mean_score,
+        "std_score": result.std_score,
+        "min_score": result.min_score,
+        "max_score": result.max_score,
+        "fail_rate": result.fail_rate,
+    }
+
+    if save:
+        baseline_trace = _simulate(creature, task_spec, backend=backend, controller=controller)
+        run_dir = save_run(creature, baseline_trace, runs_dir=runs_dir, task=task_spec)
+        (run_dir / "robustness.json").write_text(json.dumps(payload, indent=2))
+        console.print(f"[green]saved[/green] robustness run -> {run_dir}")
+
+    if json_output:
+        _print_json(payload)
+        return
+
+    table = Table(title=f"robustness: {creature.name!r} on {task_spec.name!r} ({trials} trial(s))")
+    table.add_column("seed", justify="right")
+    table.add_column("score", justify="right")
+    table.add_column("fell")
+    for t in result.trials:
+        table.add_row(str(t.seed), f"{t.score:.4f}", "yes" if t.fell else "no")
+    console.print(table)
+    console.print(
+        f"mean={result.mean_score:.4f} std={result.std_score:.4f} "
+        f"min={result.min_score:.4f} max={result.max_score:.4f} "
+        f"fail_rate={result.fail_rate:.0%}"
+    )
+
+
+@app.command(rich_help_panel="Advanced")
+def sim2sim(
+    path: Annotated[
+        Path,
+        typer.Argument(help="Path to a run directory or `latest` (needs creature.json+task.json)."),
+    ],
+    controller: Annotated[
+        str, typer.Option(help="Open-loop controller: 'sinusoid' or 'cpg'.")
+    ] = "sinusoid",
+    save: Annotated[
+        bool, typer.Option(help="Save a new run (trace.json + sim2sim.json) under --runs-dir.")
+    ] = False,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory used when resolving `latest`, and to save --save runs.")
+    ] = DEFAULT_RUNS_DIR,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable results.")
+    ] = False,
+) -> None:
+    """Run the same creature/task on PyBullet and MuJoCo and report the score/trajectory gap.
+
+    Specs and traces are portable; exact physics is backend-dependent (see the README).
+    This measures how big that gap actually is for one creature/task.
+    """
+    import math
+
+    from creature_lab.viewers.overlays import root_path
+
+    creature = _load_creature_for_trace(path, None, runs_dir)
+    task_spec = _load_task_for_trace(path, None, runs_dir)
+    if task_spec is None:
+        console.print("[red]error:[/red] no task.json found for this run")
+        raise typer.Exit(code=2)
+
+    trace_pybullet = _simulate(creature, task_spec, backend="pybullet", controller=controller)
+    trace_mujoco = _simulate(creature, task_spec, backend="mujoco", controller=controller)
+
+    path_a = root_path(creature, trace_pybullet)
+    path_b = root_path(creature, trace_mujoco)
+    n = min(len(path_a), len(path_b))
+    divergence = sum(math.dist(path_a[i], path_b[i]) for i in range(n)) / n if n else 0.0
+    score_gap = abs(trace_pybullet.score - trace_mujoco.score)
+
+    payload = {
+        "creature": creature.name,
+        "task": task_spec.name,
+        "pybullet": {
+            "score": trace_pybullet.score,
+            "backend_version": trace_pybullet.meta.backend_version if trace_pybullet.meta else None,
+        },
+        "mujoco": {
+            "score": trace_mujoco.score,
+            "backend_version": trace_mujoco.meta.backend_version if trace_mujoco.meta else None,
+        },
+        "score_gap": score_gap,
+        "mean_root_divergence": divergence,
+    }
+
+    if save:
+        run_dir = save_run(creature, trace_pybullet, runs_dir=runs_dir, task=task_spec)
+        (run_dir / "sim2sim.json").write_text(json.dumps(payload, indent=2))
+        console.print(f"[green]saved[/green] sim2sim run -> {run_dir}")
+
+    if json_output:
+        _print_json(payload)
+        return
+
+    table = Table(title=f"sim2sim: {creature.name!r} on {task_spec.name!r}")
+    table.add_column("backend")
+    table.add_column("score", justify="right")
+    table.add_row("pybullet", f"{trace_pybullet.score:.4f}")
+    table.add_row("mujoco", f"{trace_mujoco.score:.4f}")
+    console.print(table)
+    console.print(f"score gap: {score_gap:.4f}")
+    console.print(f"mean root-position divergence: {divergence:.4f} m (top-down path, per frame)")
 
 
 @app.command(rich_help_panel="Advanced")
@@ -1298,6 +1675,7 @@ def export(
         raise typer.Exit(code=2)
     trace = _load_spec(_resolve_trace_path(path, runs_dir), EpisodeTrace)
     creature = _load_creature_for_trace(path, creature_path, runs_dir)
+    task_spec = _load_task_for_trace(path, None, runs_dir)
 
     try:
         from creature_lab.backends.pybullet_backend import render_trace
@@ -1315,7 +1693,7 @@ def export(
         )
         raise typer.Exit(code=2) from exc
 
-    frames = render_trace(creature, trace, width=width, height=height)
+    frames = render_trace(creature, trace, task=task_spec, width=width, height=height)
     saved_path = write_animation(frames, out_path, fps=fps)
     console.print(f"[green]exported[/green] {len(frames)} frame(s) -> {saved_path}")
 
@@ -1422,15 +1800,18 @@ def gallery_build(
         console.print("[red]error:[/red] use --zoo to build the packaged zoo gallery")
         raise typer.Exit(code=2)
 
+    from creature_lab.reports_html import gallery_card_html, gallery_index_html
     from creature_lab.zoo import default_task_name, list_zoo_creatures, zoo_baseline, zoo_creature
 
     out.mkdir(parents=True, exist_ok=True)
     cards: list[str] = []
+    html_cards: list[str] = []
     for name in list_zoo_creatures():
         task_name = default_task_name(name)
         creature, task_spec = zoo_creature(name, task_name)
         baseline = zoo_baseline(name, task_name)
         gif_name: str | None = None
+        current_score: float | None = None
         if media:
             try:
                 from creature_lab.backends.pybullet_backend import render_trace
@@ -1442,15 +1823,28 @@ def gallery_build(
                 raise typer.Exit(code=2) from exc
             trace = _simulate(creature, task_spec)
             save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
+            current_score = trace.score
             gif_path = out / f"{name}.gif"
-            write_animation(render_trace(creature, trace, width=width, height=height), gif_path)
+            frames = render_trace(creature, trace, task=task_spec, width=width, height=height)
+            write_animation(frames, gif_path)
             gif_name = gif_path.name
         card = _gallery_card(name, task_name, baseline, gif_name)
         card_path = out / f"{name}.md"
         card_path.write_text(card)
         cards.append(f"- [{name}]({card_path.name})")
+        html_cards.append(
+            gallery_card_html(
+                name,
+                task_name,
+                baseline,
+                current_score,
+                gif_name,
+                _gallery_failure_note(name, task_name),
+            )
+        )
 
     (out / "index.md").write_text("# Creature Zoo Gallery\n\n" + "\n".join(cards) + "\n")
+    (out / "index.html").write_text(gallery_index_html(html_cards))
     console.print(f"[green]built[/green] {len(cards)} zoo gallery card(s) -> {out}")
 
 

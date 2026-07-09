@@ -2,7 +2,7 @@
 
 import random
 
-from creature_lab.evolve import hill_climb, mutate
+from creature_lab.evolve import hill_climb, llm_mutate, mutate
 from creature_lab.schema import CreatureSpec
 
 SEED_CREATURE = {
@@ -40,6 +40,42 @@ def test_mutate_changes_something():
     rng = random.Random(1)
     changed = any(mutate(_seed(), rng) != _seed() for _ in range(10))
     assert changed
+
+
+def test_llm_mutate_returns_valid_creature():
+    rng = random.Random(0)
+    for _ in range(20):
+        mutated = llm_mutate(_seed(), rng)
+        CreatureSpec.model_validate(mutated.model_dump())
+
+
+def test_llm_mutate_is_deterministic_for_a_seed():
+    a = llm_mutate(_seed(), random.Random(42))
+    b = llm_mutate(_seed(), random.Random(42))
+    assert a == b
+
+
+def test_llm_mutate_calls_on_propose_with_the_chosen_proposal():
+    seen = []
+    llm_mutate(_seed(), random.Random(0), on_propose=seen.append)
+    assert len(seen) == 1
+    assert seen[0].tool  # a real tool name was chosen
+
+
+def test_llm_mutate_no_tunable_parameters_is_a_no_op_not_an_error():
+    still = CreatureSpec.model_validate(
+        {"name": "still", "parts": [{"id": "a", "shape": "sphere", "radius": 0.1, "mass": 1.0}]}
+    )
+    result = llm_mutate(still, random.Random(0))
+    assert result == still
+
+
+def test_llm_mutate_works_as_a_hill_climb_mutate_fn():
+    def evaluate(creature: CreatureSpec) -> float:
+        return sum(m.amplitude for m in creature.motors)
+
+    result = hill_climb(_seed(), evaluate, attempts=5, rng=random.Random(0), mutate_fn=llm_mutate)
+    assert result.best_score >= evaluate(_seed())
 
 
 def test_hill_climb_never_decreases_best_score():

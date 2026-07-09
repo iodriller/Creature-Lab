@@ -6,8 +6,9 @@ behaviour descriptor) function, so every strategy is deterministic and testable
 without a simulator (see CLAUDE.md: do not rely on exact physics reproducibility).
 
 Strategies: ``hill_climb`` (greedy), ``genetic`` (population + crossover),
-``map_elites`` (quality-diversity archive), and ``cmaes`` (controller-parameter
-CMA-ES, needs the optional ``cmaes`` package).
+``map_elites`` (quality-diversity archive), ``cmaes`` (controller-parameter CMA-ES,
+needs the optional ``cmaes`` package), and the ``llm_mutate`` operator (proposes edits
+through the validated agent tool layer instead of the structural mutators below).
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from __future__ import annotations
 import random
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from creature_lab.schema import CreatureSpec
 from creature_lab.schema.creature import JointType, ShapeType
@@ -357,3 +359,32 @@ def cmaes(
             optimizer.tell(solutions)
 
     return EvolutionResult(best, best_score, history)
+
+
+def llm_mutate(
+    spec: CreatureSpec,
+    rng: random.Random,
+    *,
+    on_propose: Callable[[Any], None] | None = None,
+) -> CreatureSpec:
+    """A ``mutate_fn`` that proposes one edit through the validated agent tool layer.
+
+    Uses the offline, no-provider ``RandomToolPolicy`` (so ``evolve --strategy llm`` needs
+    no API key and stays deterministic/testable), reseeded from ``rng`` on every call so a
+    fixed top-level ``--seed`` still reproduces the whole run. A creature with nothing
+    tunable yields a "no-op" proposal that the tool layer rejects; that is not an error
+    here, it just means this attempt leaves the spec unchanged. ``on_propose``, if given,
+    is called with every ``Proposal`` (accepted or not) so a caller can record rationale.
+    """
+    from creature_lab.agents.baseline import RandomToolPolicy
+    from creature_lab.agents.loop import Observation
+    from creature_lab.agents.tools import ToolError, apply_tool
+
+    policy = RandomToolPolicy(seed=rng.randrange(2**31))
+    proposal = policy(Observation(spec, 0.0, 0))
+    if on_propose is not None:
+        on_propose(proposal)
+    try:
+        return apply_tool(spec, proposal.tool, proposal.args)
+    except ToolError:
+        return spec

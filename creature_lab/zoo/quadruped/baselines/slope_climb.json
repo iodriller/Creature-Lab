@@ -1,0 +1,14 @@
+{
+  "creature": "quadruped",
+  "task": "slope_climb",
+  "backend": "pybullet api 202010061",
+  "best_score": 0.2158,
+  "score_summary": {
+    "forward": 0.2158,
+    "target": 0.0,
+    "energy": -0.0,
+    "fall": 0.0,
+    "total": 0.2158
+  },
+  "note": "open-loop sinusoid controller baseline; an uphill slope roughly halves flat-ground progress"
+}

@@ -16,6 +16,14 @@ from xml.dom import minidom
 
 from creature_lab.schema import CreatureSpec, PartSpec, ShapeType
 from creature_lab.schema.creature import JointSpec, JointType
+from creature_lab.schema.task import TerrainSpec
+from creature_lab.terrain import (
+    DEFAULT_CELL_SIZE,
+    DEFAULT_COLS,
+    DEFAULT_ROWS,
+    heightfield_range,
+    is_flat,
+)
 
 _DEFAULT_KP = 20.0  # position-servo stiffness
 # Joint damping + rotor armature keep the position servos numerically stable on
@@ -86,14 +94,64 @@ def _add_body(
         )
 
 
+def _add_ground(
+    mujoco: ET.Element, worldbody: ET.Element, friction: float, terrain: TerrainSpec | None
+) -> None:
+    """Add a flat plane, or a <hfield> asset + geom sized from the shared terrain grid.
+
+    The hfield's cell data is left at MuJoCo's zero default here; a runtime backend
+    (which alone knows the ``mujoco`` Python API) fills it in via
+    ``creature_lab.terrain.normalized_heightfield_data`` after loading the model.
+    """
+    if terrain is None or is_flat(terrain):
+        ET.SubElement(
+            worldbody,
+            "geom",
+            name="ground",
+            type="plane",
+            size="10 10 0.1",
+            friction=f"{_num(friction)} 0.005 0.0001",
+        )
+        return
+
+    lo, hi = heightfield_range(terrain)
+    span = max(hi - lo, 1e-6)
+    radius_x = (DEFAULT_ROWS * DEFAULT_CELL_SIZE) / 2
+    radius_y = (DEFAULT_COLS * DEFAULT_CELL_SIZE) / 2
+    asset = ET.SubElement(mujoco, "asset")
+    ET.SubElement(
+        asset,
+        "hfield",
+        name="terrain",
+        nrow=str(DEFAULT_ROWS),
+        ncol=str(DEFAULT_COLS),
+        size=f"{_num(radius_x)} {_num(radius_y)} {_num(span)} 0.5",
+    )
+    ET.SubElement(
+        worldbody,
+        "geom",
+        name="ground",
+        type="hfield",
+        hfield="terrain",
+        pos=f"0 0 {_num(lo)}",
+        friction=f"{_num(friction)} 0.005 0.0001",
+    )
+
+
 def export_mjcf(
     creature: CreatureSpec,
     *,
     friction: float = 1.0,
     timestep: float = 1.0 / 60.0,
     with_ground: bool = True,
+    terrain: TerrainSpec | None = None,
 ) -> str:
-    """Return an MJCF XML document describing ``creature`` (a loadable scene)."""
+    """Return an MJCF XML document describing ``creature`` (a loadable scene).
+
+    ``terrain`` (non-flat) builds a <hfield> ground sized to match
+    ``creature_lab.terrain.heightfield_grid``; see ``MuJoCoBackend.build`` for how the
+    actual elevation data is injected at runtime.
+    """
     parts_by_id = {part.id: part for part in creature.parts}
     children_by_parent: dict[str, list[JointSpec]] = {}
     child_ids = set()
@@ -111,14 +169,7 @@ def export_mjcf(
 
     worldbody = ET.SubElement(mujoco, "worldbody")
     if with_ground:
-        ET.SubElement(
-            worldbody,
-            "geom",
-            name="ground",
-            type="plane",
-            size="10 10 0.1",
-            friction=f"{_num(friction)} 0.005 0.0001",
-        )
+        _add_ground(mujoco, worldbody, friction, terrain)
     _add_body(worldbody, root, None, parts_by_id, children_by_parent)
 
     motored = {motor.joint for motor in creature.motors}

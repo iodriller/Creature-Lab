@@ -42,6 +42,27 @@ def test_inspect_reports_summary(tmp_path):
     assert "score breakdown" in result.stdout
     assert "contacts by part" in result.stdout
     assert "sha256:" in result.stdout
+    assert "terrain" in result.stdout
+    assert "plane" in result.stdout
+
+
+def test_inspect_shows_non_flat_terrain(tmp_path):
+    pytest.importorskip("pybullet")
+    runs_dir = tmp_path / "runs"
+    run = runner.invoke(
+        app,
+        ["zoo", "run", "quadruped", "--task", "slope_climb", "--runs-dir", str(runs_dir)],
+    )
+    assert run.exit_code == 0, run.stdout
+    [run_dir] = [path for path in runs_dir.iterdir() if path.is_dir()]
+
+    result = runner.invoke(app, ["inspect", str(run_dir)])
+    assert result.exit_code == 0, result.stdout
+    assert "slope" in result.stdout
+
+    json_result = runner.invoke(app, ["inspect", str(run_dir), "--json"])
+    payload = json.loads(json_result.stdout)
+    assert "slope" in payload["terrain"]
 
 
 def test_inspect_missing_path_exits_cleanly():
@@ -158,6 +179,36 @@ def test_export_creates_gif(tmp_path):
     assert run_result.exit_code == 0, run_result.stdout
 
     [run_dir] = [path for path in runs_dir.iterdir() if path.is_dir()]
+    out = tmp_path / "clip.gif"
+    result = runner.invoke(
+        app, ["export", str(run_dir), "--out", str(out), "--width", "64", "--height", "48"]
+    )
+    assert result.exit_code == 0, result.stdout
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_export_reads_terrain_from_the_saved_task(tmp_path):
+    # CLI wiring smoke test: `export` reads task.json from the run dir and passes it
+    # through to render_trace, so a non-flat-terrain run doesn't render a flat floor.
+    pytest.importorskip("pybullet")
+    pytest.importorskip("imageio")
+    runs_dir = tmp_path / "runs"
+    run_result = runner.invoke(
+        app,
+        [
+            "zoo",
+            "run",
+            "quadruped",
+            "--task",
+            "slope_climb",
+            "--runs-dir",
+            str(runs_dir),
+        ],
+    )
+    assert run_result.exit_code == 0, run_result.stdout
+
+    [run_dir] = [path for path in runs_dir.iterdir() if path.is_dir()]
+    assert (run_dir / "task.json").exists()
     out = tmp_path / "clip.gif"
     result = runner.invoke(
         app, ["export", str(run_dir), "--out", str(out), "--width", "64", "--height", "48"]

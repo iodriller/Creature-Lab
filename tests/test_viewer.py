@@ -7,8 +7,9 @@ is not installed.
 
 import pytest
 
-from creature_lab.schema import CreatureSpec, FrameState, PartSpec, TaskSpec
+from creature_lab.schema import CreatureSpec, EpisodeTrace, FrameState, PartSpec, TaskSpec
 from creature_lab.viewers.viser_viewer import (
+    add_debug_overlays,
     apply_frame,
     build_scene,
     part_color_255,
@@ -175,3 +176,107 @@ def test_stream_frames_can_open_browser(monkeypatch):
 
     assert captured == [frame]
     assert opened == [("http://localhost:8135", 2)]
+
+
+def test_build_scene_draws_a_flat_grid_for_flat_terrain():
+    viser = pytest.importorskip("viser")
+
+    creature = CreatureSpec.model_validate(CREATURE)
+    task = TaskSpec.model_validate({"name": "t", "duration": 1.0})
+
+    server = viser.ViserServer(port=8132, verbose=False)
+    try:
+        handles = build_scene(server, creature, task)
+        assert type(handles.floor).__name__ == "GridHandle"
+    finally:
+        server.stop()
+
+
+def test_build_scene_draws_a_terrain_mesh_for_non_flat_terrain():
+    viser = pytest.importorskip("viser")
+    pytest.importorskip("trimesh")
+
+    creature = CreatureSpec.model_validate(CREATURE)
+    task = TaskSpec.model_validate(
+        {"name": "t", "duration": 1.0, "terrain": {"type": "slope", "slope_angle": 0.2}}
+    )
+
+    server = viser.ViserServer(port=8133, verbose=False)
+    try:
+        handles = build_scene(server, creature, task)
+        # A heightfield mesh, not the flat grid drawn for plane terrain.
+        assert type(handles.floor).__name__ != "GridHandle"
+    finally:
+        server.stop()
+
+
+def test_build_scene_no_floor_when_add_floor_is_false():
+    viser = pytest.importorskip("viser")
+
+    creature = CreatureSpec.model_validate(CREATURE)
+    server = viser.ViserServer(port=8134, verbose=False)
+    try:
+        handles = build_scene(server, creature, None, add_floor=False)
+        assert handles.floor is None
+    finally:
+        server.stop()
+
+
+def test_debug_overlays_root_path_follows_terrain_height():
+    import math
+
+    viser = pytest.importorskip("viser")
+
+    creature = CreatureSpec.model_validate(CREATURE)
+    slope_angle = 0.5
+    task = TaskSpec.model_validate(
+        {"name": "t", "duration": 1.0, "terrain": {"type": "slope", "slope_angle": slope_angle}}
+    )
+    trace = EpisodeTrace.model_validate(
+        {
+            "run_id": "r",
+            "creature_name": "tripod",
+            "task_name": "t",
+            "backend": "pybullet",
+            "score": 0.0,
+            "frames": [
+                {"t": 0.0, "parts": {"torso": {"position": [3.0, 0.0, 1.0]}}, "score": 0.0},
+            ],
+        }
+    )
+
+    server = viser.ViserServer(port=8135, verbose=False)
+    try:
+        handle = add_debug_overlays(server, creature, trace, task)
+        assert handle is not None
+        # ~3.0 * tan(0.5) of terrain height at that point (nearest-cell, so approximate);
+        # a flat-ground overlay would have placed this point near z=0.005 instead.
+        expected_height = 3.0 * math.tan(slope_angle)
+        assert handle.points[0][2] == pytest.approx(expected_height, abs=0.1)
+    finally:
+        server.stop()
+
+
+def test_debug_overlays_root_path_is_flat_without_a_task():
+    viser = pytest.importorskip("viser")
+
+    creature = CreatureSpec.model_validate(CREATURE)
+    trace = EpisodeTrace.model_validate(
+        {
+            "run_id": "r",
+            "creature_name": "tripod",
+            "task_name": "t",
+            "backend": "pybullet",
+            "score": 0.0,
+            "frames": [
+                {"t": 0.0, "parts": {"torso": {"position": [3.0, 0.0, 1.0]}}, "score": 0.0},
+            ],
+        }
+    )
+
+    server = viser.ViserServer(port=8136, verbose=False)
+    try:
+        handle = add_debug_overlays(server, creature, trace, None)
+        assert handle.points[0][2] == pytest.approx(0.005, abs=1e-6)
+    finally:
+        server.stop()

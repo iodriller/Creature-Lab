@@ -31,6 +31,7 @@ class SceneHandles:
     parts: dict[str, Any]
     contacts: list[Any] = field(default_factory=list)
     extras: list[Any] = field(default_factory=list)
+    floor: Any = None
 
 
 def part_color_255(part: PartSpec) -> tuple[int, int, int]:
@@ -62,6 +63,46 @@ def _add_part(scene: Any, name: str, part: PartSpec) -> Any:
     return scene.add_mesh_trimesh(name, mesh)
 
 
+def _add_floor(server: Any, task: TaskSpec | None) -> Any:
+    """Draw the ground: a flat grid, or a mesh built from the task's terrain heightfield.
+
+    Without this, replaying a non-flat-terrain run would show the creature floating
+    above (or sinking into) a flat floor instead of the slope/steps/gaps it actually ran on.
+    Returns the Viser handle (a grid or a mesh), mainly so tests can tell which was drawn.
+    """
+    from creature_lab.terrain import is_flat
+
+    if task is None or is_flat(task.terrain):
+        return server.scene.add_grid("/floor", width=10.0, height=10.0, plane="xy")
+
+    import numpy as np
+    import trimesh
+
+    from creature_lab.terrain import DEFAULT_CELL_SIZE, heightfield_grid
+
+    grid = heightfield_grid(task.terrain)
+    rows, cols = len(grid), len(grid[0])
+    x0 = -(rows * DEFAULT_CELL_SIZE) / 2
+    y0 = -(cols * DEFAULT_CELL_SIZE) / 2
+    vertices = np.array(
+        [
+            (x0 + r * DEFAULT_CELL_SIZE, y0 + c * DEFAULT_CELL_SIZE, grid[r][c])
+            for r in range(rows)
+            for c in range(cols)
+        ]
+    )
+    faces = []
+    for r in range(rows - 1):
+        for c in range(cols - 1):
+            top_left, top_right = r * cols + c, r * cols + c + 1
+            bottom_left, bottom_right = (r + 1) * cols + c, (r + 1) * cols + c + 1
+            faces.append((top_left, bottom_left, bottom_right))
+            faces.append((top_left, bottom_right, top_right))
+    mesh = trimesh.Trimesh(vertices=vertices, faces=np.array(faces))
+    mesh.visual.vertex_colors = np.array([140, 140, 140, 255], dtype=np.uint8)
+    return server.scene.add_mesh_trimesh("/floor", mesh)
+
+
 def build_scene(
     server: Any,
     creature: CreatureSpec,
@@ -77,9 +118,8 @@ def build_scene(
     can share one server (used by ``compare``); ``add_floor`` lets the caller draw a
     single shared floor.
     """
+    floor = _add_floor(server, task) if add_floor else None
     extras: list[Any] = []
-    if add_floor:
-        extras.append(server.scene.add_grid("/floor", width=10.0, height=10.0, plane="xy"))
     if task is not None and task.target is not None:
         target = server.scene.add_icosphere(
             f"{prefix}/target", radius=task.target.radius, color=(255, 180, 40)
@@ -98,14 +138,17 @@ def build_scene(
         )
         marker.visible = False
         contacts.append(marker)
-    return SceneHandles(parts=parts, contacts=contacts, extras=extras)
+    return SceneHandles(parts=parts, contacts=contacts, extras=extras, floor=floor)
 
 
 def remove_scene(handles: SceneHandles | None) -> None:
     """Remove all Viser handles created by ``build_scene``."""
     if handles is None:
         return
-    for handle in [*handles.parts.values(), *handles.contacts, *handles.extras]:
+    all_handles = [*handles.parts.values(), *handles.contacts, *handles.extras]
+    if handles.floor is not None:
+        all_handles.append(handles.floor)
+    for handle in all_handles:
         try:
             handle.remove()
         except Exception:
@@ -113,11 +156,20 @@ def remove_scene(handles: SceneHandles | None) -> None:
             pass
 
 
-def add_debug_overlays(server: Any, creature: CreatureSpec, trace: EpisodeTrace) -> None:
-    """Draw static debug overlays: CoM trail, root ground path, and a fall marker."""
+def add_debug_overlays(
+    server: Any, creature: CreatureSpec, trace: EpisodeTrace, task: TaskSpec | None = None
+) -> Any:
+    """Draw static debug overlays: CoM trail, root ground path, and a fall marker.
+
+    ``task`` places the root-path dots on the actual terrain surface instead of a flat
+    z=0 plane, so they don't appear to float above a slope or sink into a gap. Returns
+    the root-path point-cloud handle (or ``None``), mainly so tests can inspect it.
+    """
     import numpy as np
 
     from creature_lab.diagnosis import diagnose
+    from creature_lab.schema.task import TerrainSpec
+    from creature_lab.terrain import height_at
     from creature_lab.viewers.overlays import center_of_mass_trail, root_path
 
     com = center_of_mass_trail(creature, trace)
@@ -129,9 +181,13 @@ def add_debug_overlays(server: Any, creature: CreatureSpec, trace: EpisodeTrace)
             point_size=0.02,
         )
     path = root_path(creature, trace)
+    root_path_handle = None
     if path:
-        floor_path = np.asarray([(x, y, 0.005) for x, y, _ in path], dtype=np.float32)
-        server.scene.add_point_cloud(
+        terrain = task.terrain if task is not None else TerrainSpec()
+        floor_path = np.asarray(
+            [(x, y, height_at(terrain, x, y) + 0.005) for x, y, _ in path], dtype=np.float32
+        )
+        root_path_handle = server.scene.add_point_cloud(
             "/debug/root_path", points=floor_path, colors=(255, 220, 40), point_size=0.015
         )
     # Mark where the body first toppled, if it did.
@@ -141,6 +197,8 @@ def add_debug_overlays(server: Any, creature: CreatureSpec, trace: EpisodeTrace)
         index = min(range(len(trace.frames)), key=lambda i: abs(trace.frames[i].t - fall_time))
         marker = server.scene.add_icosphere("/debug/fall", radius=0.06, color=(255, 40, 40))
         marker.position = com[index]
+
+    return root_path_handle
 
 
 def apply_frame(
@@ -198,7 +256,7 @@ def stream_frames(
         webbrowser.open(f"http://localhost:{port}", new=2)
     handles = build_scene(server, creature, task)
     if debug_trace is not None:
-        add_debug_overlays(server, creature, debug_trace)
+        add_debug_overlays(server, creature, debug_trace, task)
     delay = 1.0 / fps
     captured: list[FrameState] = []
     try:

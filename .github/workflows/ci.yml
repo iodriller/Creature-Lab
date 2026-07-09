@@ -31,3 +31,16 @@ jobs:
         run: |
           uv run creature-lab doctor
           uv run creature-lab validate examples/tripod.json --task examples/crawl_forward.json
+      - name: Build wheel and smoke-test it from a clean install
+        # Packaged zoo data (creatures/tasks/baselines) must work from an installed wheel,
+        # outside the checkout — not just "uv run" against the source tree. Regressed
+        # silently once before (a renamed package directory broke the build entirely).
+        run: |
+          rm -rf dist
+          uv build
+          python3 -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install --quiet "$(ls dist/*.whl)[sim]"
+          mkdir -p /tmp/wheel-smoke
+          cd /tmp/wheel-smoke
+          /tmp/wheel-venv/bin/creature-lab doctor
+          /tmp/wheel-venv/bin/creature-lab zoo run quadruped --task crawl_forward --runs-dir ./runs

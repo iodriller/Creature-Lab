@@ -70,9 +70,14 @@ def zoo_creature(name: str, task: str | None = None) -> tuple[CreatureSpec, Task
     return creature, task_spec
 
 
-def zoo_baseline(name: str, task: str) -> dict[str, Any] | None:
-    """Load the optional packaged baseline metadata for a zoo creature/task pair."""
-    path = _creature_dir(name) / "baselines" / f"{task}.json"
+def zoo_baseline(name: str, task: str, backend: str = "pybullet") -> dict[str, Any] | None:
+    """Load the optional packaged baseline metadata for a zoo creature/task pair.
+
+    ``backend="pybullet"`` (the default) reads ``baselines/<task>.json``, the original
+    filename; any other backend reads the backend-suffixed ``baselines/<task>.<backend>.json``.
+    """
+    filename = f"{task}.json" if backend == "pybullet" else f"{task}.{backend}.json"
+    path = _creature_dir(name) / "baselines" / filename
     return json.loads(path.read_text()) if path.exists() else None
 
 

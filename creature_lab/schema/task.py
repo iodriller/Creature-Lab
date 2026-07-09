@@ -11,6 +11,10 @@ from creature_lab.schema.base import StrictModel, Vector3
 
 class TerrainType(StrEnum):
     PLANE = "plane"
+    SLOPE = "slope"
+    STEPS = "steps"
+    GAPS = "gaps"
+    ROUGH = "rough"
 
 
 class TargetType(StrEnum):
@@ -18,8 +22,31 @@ class TargetType(StrEnum):
 
 
 class TerrainSpec(StrictModel):
+    """The ground a task runs on.
+
+    Non-``plane`` types build a shared heightfield (see ``creature_lab/terrain.py``) so
+    both backends simulate the same shape; only the fields relevant to ``type`` are used.
+    """
+
     type: TerrainType = TerrainType.PLANE
     friction: float = Field(default=0.8, ge=0)
+    #: SLOPE: incline angle in radians, along the +x (forward) axis.
+    slope_angle: float = Field(default=0.0, ge=-1.4, le=1.4)
+    #: STEPS: rise per step (m) and horizontal run per step (m).
+    step_height: float = Field(default=0.05, gt=0)
+    step_length: float = Field(default=0.4, gt=0)
+    #: GAPS: width of each impassable gap (m) and the distance between gap starts (m).
+    gap_width: float = Field(default=0.2, gt=0)
+    gap_period: float = Field(default=1.0, gt=0)
+    #: ROUGH: max per-cell height perturbation (m) and the seed for reproducible noise.
+    roughness: float = Field(default=0.03, ge=0)
+    seed: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_gaps(self) -> TerrainSpec:
+        if self.gap_width >= self.gap_period:
+            raise ValueError("terrain gap_width must be less than gap_period")
+        return self
 
 
 class TargetSpec(StrictModel):

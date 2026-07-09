@@ -1,0 +1,14 @@
+{
+  "creature": "quadruped",
+  "task": "reach_target",
+  "backend": "mujoco 3.10.0",
+  "best_score": 0.2102,
+  "score_summary": {
+    "forward": -0.0,
+    "target": 0.2453,
+    "energy": -0.0351,
+    "fall": 0.0,
+    "total": 0.2102
+  },
+  "note": "open-loop sinusoid controller baseline (MuJoCo backend)"
+}
