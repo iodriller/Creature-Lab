@@ -12,15 +12,68 @@ modular robot-creatures from JSON.
 Run a creature, watch it move, score the episode, diagnose failures, evolve better
 versions, and replay or export the result.
 
-## Quickstart
+## Start Here
 
-```bash
-uv sync --extra sim --extra viz
-uv run creature-lab demo --no-hold
+From a fresh checkout, run one launcher. It installs the demo extras, checks the environment,
+opens the browser viewer, and keeps the creature looping until you press `Ctrl+C`.
+
+Windows PowerShell:
+
+```powershell
+.\scripts\start.ps1
 ```
 
-`demo --no-hold` runs the built-in quadruped in the browser viewer, saves a trace under
-`runs/`, and exits. Omit `--no-hold` when you want the viewer to keep looping.
+Portable Python:
+
+```bash
+python scripts/start.py
+```
+
+What should happen:
+
+- A terminal shows setup progress and a viewer URL such as `http://localhost:8080`.
+- Your browser opens to the live Viser viewer.
+- A quadruped starts moving and keeps replaying.
+- When you press `Ctrl+C`, the run is saved under `runs/`.
+
+Run one pass and exit, useful for smoke tests:
+
+```bash
+python scripts/start.py --once
+```
+
+Use a different packaged creature:
+
+```bash
+python scripts/start.py --creature worm
+```
+
+Build or tune a creature in the browser:
+
+```bash
+uv run creature-lab build
+```
+
+## Manual Quickstart
+
+```bash
+uv sync --inexact --extra sim --extra viz
+uv run creature-lab demo --open-browser
+```
+
+`demo` runs the built-in quadruped in the browser viewer and keeps it looping. Add `--no-hold`
+when you want it to save a trace and exit after one pass.
+
+If launch fails, start with:
+
+```bash
+python scripts/start.py --dry-run
+uv run creature-lab doctor
+```
+
+If the browser does not open automatically, copy the printed `http://localhost:<port>` URL into
+your browser. If port `8080` is busy, the launcher picks the next open port unless you explicitly
+set `--port`.
 
 ## Next Steps
 
@@ -30,6 +83,13 @@ Browse the built-in Creature Zoo:
 uv run creature-lab zoo list
 uv run creature-lab zoo run quadruped
 uv run creature-lab report latest
+```
+
+Create or tune a CreatureSpec without hand-editing JSON:
+
+```bash
+uv run creature-lab build --preset humanoid
+uv run creature-lab build outputs/build_creature.json --out outputs/build_creature.json
 ```
 
 Improve a creature with the local evolution loop:
@@ -50,6 +110,7 @@ uv run creature-lab export latest --gif demo.gif
 ## What You Get
 
 - A curated Creature Zoo: quadruped, worm, hexapod, tripod, damaged quadruped, and humanoids.
+- A browser build editor for presets, body sliders, part edits, motor tuning, validation, and simulation.
 - Portable JSON specs for creatures and tasks.
 - Physics runs saved as replayable traces with metadata, hashes, scores, contacts, and warnings.
 - Local improvement loops: `evolve` for search and `ask --offline` for validated design edits.
@@ -75,7 +136,9 @@ physics behavior is backend-dependent.
 
 ## Docs
 
+- [Documentation Home](docs/README.md) - where to start and how the docs fit together.
 - [Getting Started](docs/GETTING_STARTED.md) - the shortest path from clone to first run.
+- [Build Editor](docs/BUILD_EDITOR.md) - browser setup screen for creating CreatureSpec JSON.
 - [Concepts](docs/CONCEPTS.md) - creatures, tasks, traces, backends, and the improve loop.
 - [Creature Spec](docs/CREATURE_SPEC.md) - the JSON shape for body graphs and motors.
 - [Task Spec](docs/TASK_SPEC.md) - worlds, rewards, targets, damage, and push events.
@@ -91,6 +154,7 @@ These features are available, but they are not needed for the first run:
 
 | Need | Command or API |
 | --- | --- |
+| Build/edit a creature visually | `uv run creature-lab build --preset humanoid` |
 | Pre-flight validation | `uv run creature-lab validate examples/tripod.json --task examples/crawl_forward.json` |
 | Diagnose why a run failed | `uv run creature-lab diagnose runs/<run-id>` |
 | Write a run report | `uv run creature-lab report latest --out report.md` |
@@ -121,6 +185,14 @@ uv run pytest
 ```
 
 CI runs Ruff, Pytest, `doctor`, and `validate --task` with the test-exercised extras installed.
+
+For a local smoke test that mirrors the first-run path:
+
+```bash
+python scripts/start.py --dry-run
+uv run creature-lab doctor
+uv run creature-lab validate examples/tripod.json --task examples/crawl_forward.json
+```
 
 ## Development Principle
 

@@ -2,6 +2,12 @@
 
 These JSON files are small, editable starting points for local experiments.
 
+Start the packaged demo first:
+
+```bash
+python scripts/start.py
+```
+
 | File | Type | Run |
 | --- | --- | --- |
 | `quadruped.json` | CreatureSpec | `uv run creature-lab run examples/quadruped.json --task examples/crawl_forward.json` |
@@ -22,4 +28,16 @@ After a run:
 ```bash
 uv run creature-lab report latest
 uv run creature-lab diagnose latest
+```
+
+Use the launcher with example files:
+
+```bash
+python scripts/start.py --creature-path examples/quadruped.json --task examples/crawl_forward.json
+```
+
+For a quick non-interactive check:
+
+```bash
+python scripts/start.py --creature-path examples/quadruped.json --task examples/crawl_forward.json --once --no-open-browser
 ```

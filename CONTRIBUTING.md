@@ -10,6 +10,21 @@ strengthen that loop: JSON specs, runs, diagnostics, zoo examples, reports, benc
 - Improve docs around specs, run artifacts, diagnostics, or examples.
 - Add tests for CLI workflows and saved artifacts.
 
+## Local Setup
+
+Run the first-run path:
+
+```bash
+python scripts/start.py
+```
+
+For full development:
+
+```bash
+uv sync --inexact --all-extras
+uv run creature-lab doctor
+```
+
 ## Before Opening A PR
 
 Run:
@@ -46,3 +61,6 @@ specs that are hard to debug.
 
 Do not add generic agent orchestration, personas, social simulation, cloud dashboards, or hosted
 leaderboards to Creature Lab. Keep the project focused on local embodied design experiments.
+
+Do not commit generated `runs/`, `outputs/`, local reports, GIFs, MP4s, or personal
+`CLAUDE.local.md` notes.

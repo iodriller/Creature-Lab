@@ -11,6 +11,7 @@ Viser is an optional dependency (the ``viz`` extra); import this module lazily.
 from __future__ import annotations
 
 import time
+import webbrowser
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -29,6 +30,7 @@ class SceneHandles:
 
     parts: dict[str, Any]
     contacts: list[Any] = field(default_factory=list)
+    extras: list[Any] = field(default_factory=list)
 
 
 def part_color_255(part: PartSpec) -> tuple[int, int, int]:
@@ -75,13 +77,15 @@ def build_scene(
     can share one server (used by ``compare``); ``add_floor`` lets the caller draw a
     single shared floor.
     """
+    extras: list[Any] = []
     if add_floor:
-        server.scene.add_grid("/floor", width=10.0, height=10.0, plane="xy")
+        extras.append(server.scene.add_grid("/floor", width=10.0, height=10.0, plane="xy"))
     if task is not None and task.target is not None:
         target = server.scene.add_icosphere(
             f"{prefix}/target", radius=task.target.radius, color=(255, 180, 40)
         )
         target.position = task.target.position
+        extras.append(target)
     parts = {
         part.id: _add_part(server.scene, f"{prefix}/parts/{part.id}", part)
         for part in creature.parts
@@ -94,7 +98,19 @@ def build_scene(
         )
         marker.visible = False
         contacts.append(marker)
-    return SceneHandles(parts=parts, contacts=contacts)
+    return SceneHandles(parts=parts, contacts=contacts, extras=extras)
+
+
+def remove_scene(handles: SceneHandles | None) -> None:
+    """Remove all Viser handles created by ``build_scene``."""
+    if handles is None:
+        return
+    for handle in [*handles.parts.values(), *handles.contacts, *handles.extras]:
+        try:
+            handle.remove()
+        except Exception:
+            # Best-effort cleanup: stale Viser handles should not make a refresh fail.
+            pass
 
 
 def add_debug_overlays(server: Any, creature: CreatureSpec, trace: EpisodeTrace) -> None:
@@ -163,6 +179,7 @@ def stream_frames(
     fps: float = 30.0,
     port: int = 8080,
     hold: bool = True,
+    open_browser: bool = False,
     debug_trace: EpisodeTrace | None = None,
 ) -> list[FrameState]:
     """Open a Viser server and animate `frames` as they arrive.
@@ -177,6 +194,8 @@ def stream_frames(
     import viser
 
     server = viser.ViserServer(port=port)
+    if open_browser:
+        webbrowser.open(f"http://localhost:{port}", new=2)
     handles = build_scene(server, creature, task)
     if debug_trace is not None:
         add_debug_overlays(server, creature, debug_trace)
@@ -207,6 +226,7 @@ def play_trace(
     loop: bool = True,
     port: int = 8080,
     debug: bool = False,
+    open_browser: bool = False,
 ) -> None:
     """Open a Viser server and animate a recorded trace. Blocks until interrupted."""
     stream_frames(
@@ -216,6 +236,7 @@ def play_trace(
         fps=fps,
         port=port,
         hold=loop,
+        open_browser=open_browser,
         debug_trace=trace if debug else None,
     )
 
@@ -232,11 +253,14 @@ def compare_traces(
     fps: float = 30.0,
     port: int = 8080,
     hold: bool = True,
+    open_browser: bool = False,
 ) -> None:
     """Replay two runs side by side in one Viser scene (B offset by ``gap`` in y)."""
     import viser
 
     server = viser.ViserServer(port=port)
+    if open_browser:
+        webbrowser.open(f"http://localhost:{port}", new=2)
     handles_a = build_scene(server, creature_a, task_a, prefix="/a", add_floor=True)
     handles_b = build_scene(server, creature_b, task_b, prefix="/b", add_floor=False)
     offset_a = (0.0, gap / 2, 0.0)

@@ -107,6 +107,14 @@ def test_zoo_list_json():
     assert any(entry["creature"] == "quadruped" for entry in payload)
 
 
+def test_build_help_is_available():
+    result = runner.invoke(app, ["build", "--help"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "build editor" in result.stdout
+    assert "--preset" in result.stdout
+
+
 def test_bench_requires_zoo_flag():
     result = runner.invoke(app, ["bench"])
 

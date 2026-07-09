@@ -27,6 +27,14 @@ def generate_humanoid(
     height: float = 1.6,
     mass: float = 60.0,
     dof: Literal[8, 12] = 8,
+    torso_height_ratio: float = 0.30,
+    torso_width_ratio: float = 0.18,
+    upper_leg_ratio: float = 0.24,
+    lower_leg_ratio: float = 0.24,
+    upper_arm_ratio: float = 0.18,
+    lower_arm_ratio: float = 0.16,
+    shoulder_extra_ratio: float = 0.04,
+    limb_radius_ratio: float = 0.035,
 ) -> CreatureSpec:
     """Generate a bipedal humanoid skeleton.
 
@@ -34,19 +42,33 @@ def generate_humanoid(
         height: Approximate standing height (m); all segments scale from it.
         mass: Total mass (kg), distributed across the segments.
         dof: 8 (hip/knee + shoulder/elbow) or 12 (adds ankle/foot + wrist/hand).
+        *_ratio: Body proportions as fractions of height, surfaced by the build editor.
     """
     if dof not in (8, 12):
         raise ValueError("dof must be 8 or 12")
+    ratios = {
+        "torso_height_ratio": torso_height_ratio,
+        "torso_width_ratio": torso_width_ratio,
+        "upper_leg_ratio": upper_leg_ratio,
+        "lower_leg_ratio": lower_leg_ratio,
+        "upper_arm_ratio": upper_arm_ratio,
+        "lower_arm_ratio": lower_arm_ratio,
+        "shoulder_extra_ratio": shoulder_extra_ratio,
+        "limb_radius_ratio": limb_radius_ratio,
+    }
+    for name, value in ratios.items():
+        if value <= 0:
+            raise ValueError(f"{name} must be positive")
 
     has_feet_hands = dof == 12
     # Segment lengths as fractions of height.
-    torso_h = 0.30 * height
-    torso_w = 0.18 * height
-    upper_leg = 0.24 * height
-    lower_leg = 0.24 * height
+    torso_h = torso_height_ratio * height
+    torso_w = torso_width_ratio * height
+    upper_leg = upper_leg_ratio * height
+    lower_leg = lower_leg_ratio * height
     foot_len = 0.12 * height
-    upper_arm = 0.18 * height
-    lower_arm = 0.16 * height
+    upper_arm = upper_arm_ratio * height
+    lower_arm = lower_arm_ratio * height
     hand_len = 0.08 * height
 
     parts: list[dict] = [
@@ -82,7 +104,7 @@ def generate_humanoid(
                 "id": part_id,
                 "shape": "capsule",
                 "length": length,
-                "radius": 0.035 * height,
+                "radius": limb_radius_ratio * height,
                 "mass": seg_mass,
                 "color": _LIMB_COLOR,
             }
@@ -116,7 +138,7 @@ def generate_humanoid(
     arm_mass = 0.06 * mass
     for side, sign, base_phase in (("l", 1.0, 0.0), ("r", -1.0, math.pi)):
         hip_y = sign * torso_w * 0.4
-        shoulder_y = sign * (torso_w * 0.5 + 0.04 * height)
+        shoulder_y = sign * (torso_w * 0.5 + shoulder_extra_ratio * height)
         # Leg chain: hip -> upper leg -> knee -> lower leg (-> ankle -> foot).
         add_capsule(f"upper_leg_{side}", upper_leg, leg_mass)
         add_hinge(

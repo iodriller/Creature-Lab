@@ -365,6 +365,13 @@ def demo(
     ] = None,
     fps: Annotated[float, typer.Option(help="Playback frames per second.")] = 60.0,
     port: Annotated[int, typer.Option(help="Port for the Viser server.")] = 8080,
+    open_browser: Annotated[
+        bool,
+        typer.Option(
+            "--open-browser/--no-open-browser",
+            help="Open the local viewer URL in the default browser.",
+        ),
+    ] = False,
     save: Annotated[bool, typer.Option(help="Save the streamed episode as a trace.")] = True,
     hold: Annotated[
         bool, typer.Option(help="Keep serving and looping after the run (Ctrl+C to stop).")
@@ -423,7 +430,15 @@ def demo(
     console.print(
         f"[green]serving[/green] {creature.name!r} on http://localhost:{port} (Ctrl+C to stop)"
     )
-    frames = stream_frames(creature, live_frames(), task=task_spec, fps=fps, port=port, hold=hold)
+    frames = stream_frames(
+        creature,
+        live_frames(),
+        task=task_spec,
+        fps=fps,
+        port=port,
+        hold=hold,
+        open_browser=open_browser,
+    )
 
     if save and frames:
         summary = backend_holder[0].score_summary() if backend_holder else {}
@@ -433,6 +448,102 @@ def demo(
         trace = _trace_from_frames(creature, task_spec, frames, meta=meta)
         run_dir = save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
         console.print(f"[green]saved[/green] {len(frames)} frame(s) -> {run_dir}")
+
+
+@app.command(rich_help_panel="Start Here")
+def build(
+    creature_path: Annotated[
+        Path | None,
+        typer.Argument(
+            help="Optional CreatureSpec JSON to edit instead of starting from a preset."
+        ),
+    ] = None,
+    preset: Annotated[
+        str,
+        typer.Option(help="Starting preset: quadruped, hexapod, worm, or humanoid."),
+    ] = "quadruped",
+    out: Annotated[
+        Path,
+        typer.Option("--out", "-o", help="Where Save JSON writes the CreatureSpec."),
+    ] = Path("outputs/build_creature.json"),
+    task: Annotated[
+        Path | None,
+        typer.Option(help="Optional TaskSpec JSON for simulation and validation."),
+    ] = None,
+    task_preset: Annotated[
+        str,
+        typer.Option(help="Task preset when --task is not supplied."),
+    ] = "crawl_forward",
+    controller: Annotated[
+        str, typer.Option(help="Open-loop controller for Simulate: 'sinusoid' or 'cpg'.")
+    ] = "sinusoid",
+    backend: Annotated[
+        str, typer.Option(help="Physics backend for Simulate: 'pybullet' or 'mujoco'.")
+    ] = "pybullet",
+    seed: Annotated[int | None, typer.Option(help="Seed recorded in simulated traces.")] = None,
+    port: Annotated[int, typer.Option(help="Port for the Viser build editor.")] = 8080,
+    open_browser: Annotated[
+        bool,
+        typer.Option(
+            "--open-browser/--no-open-browser",
+            help="Open the build editor URL in the default browser.",
+        ),
+    ] = True,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory to save simulated traces under.")
+    ] = DEFAULT_RUNS_DIR,
+) -> None:
+    """Open the browser build editor for presets, live tuning, validation, and simulation."""
+    from creature_lab.editor import presets as editor_presets
+    from creature_lab.editor.live import run_editor
+    from creature_lab.editor.session import EditorSession
+
+    if preset not in editor_presets.CREATURE_PRESETS:
+        available = ", ".join(editor_presets.preset_names())
+        console.print(f"[red]error:[/red] unknown preset {preset!r}; choose one of: {available}")
+        raise typer.Exit(code=2)
+    if task_preset not in editor_presets.TASK_PRESETS:
+        available = ", ".join(editor_presets.task_names())
+        console.print(
+            f"[red]error:[/red] unknown task preset {task_preset!r}; choose one of: {available}"
+        )
+        raise typer.Exit(code=2)
+
+    task_spec = (
+        _load_spec(task, TaskSpec)
+        if task is not None
+        else editor_presets.generate_task(task_preset)
+    )
+    if creature_path is not None:
+        session = EditorSession.from_path(creature_path, task=task_spec, out_path=out)
+    else:
+        session = EditorSession(
+            template=preset,
+            task=task_spec,
+            out_path=out,
+        )
+    session.task_preset = task_preset if task is None else task_spec.name
+
+    def simulate_current(creature: CreatureSpec, task_for_run: TaskSpec) -> EpisodeTrace:
+        _check_inputs(creature, task_for_run)
+        return _simulate(
+            creature,
+            task_for_run,
+            seed=seed,
+            controller=controller,
+            backend=backend,
+        )
+
+    console.print(
+        f"[green]serving[/green] build editor on http://localhost:{port} (Ctrl+C to stop)"
+    )
+    run_editor(
+        session,
+        simulate=simulate_current,
+        port=port,
+        open_browser=open_browser,
+        runs_dir=runs_dir,
+    )
 
 
 def _gait_symmetry(trace: EpisodeTrace) -> float:
@@ -1038,6 +1149,13 @@ def view(
     ] = DEFAULT_RUNS_DIR,
     fps: Annotated[float, typer.Option(help="Playback frames per second.")] = 30.0,
     port: Annotated[int, typer.Option(help="Port for the Viser server.")] = 8080,
+    open_browser: Annotated[
+        bool,
+        typer.Option(
+            "--open-browser/--no-open-browser",
+            help="Open the local viewer URL in the default browser.",
+        ),
+    ] = False,
     debug: Annotated[bool, typer.Option(help="Overlay CoM/root trails and a fall marker.")] = False,
 ) -> None:
     """Replay a saved trace in a Viser browser viewer (renders poses, no physics)."""
@@ -1056,7 +1174,15 @@ def view(
     console.print(
         f"[green]serving[/green] {trace.run_id!r} on http://localhost:{port} (Ctrl+C to stop)"
     )
-    play_trace(creature, trace, task=task_spec, fps=fps, port=port, debug=debug)
+    play_trace(
+        creature,
+        trace,
+        task=task_spec,
+        fps=fps,
+        port=port,
+        debug=debug,
+        open_browser=open_browser,
+    )
 
 
 @app.command(rich_help_panel="Advanced")
@@ -1066,6 +1192,13 @@ def compare(
     gap: Annotated[float, typer.Option(help="Sideways spacing between the two creatures.")] = 1.0,
     fps: Annotated[float, typer.Option(help="Playback frames per second.")] = 30.0,
     port: Annotated[int, typer.Option(help="Port for the Viser server.")] = 8080,
+    open_browser: Annotated[
+        bool,
+        typer.Option(
+            "--open-browser/--no-open-browser",
+            help="Open the local viewer URL in the default browser.",
+        ),
+    ] = False,
     runs_dir: Annotated[
         Path, typer.Option(help="Directory used when resolving bare run ids or `latest`.")
     ] = DEFAULT_RUNS_DIR,
@@ -1098,6 +1231,7 @@ def compare(
         gap=gap,
         fps=fps,
         port=port,
+        open_browser=open_browser,
     )
 
 

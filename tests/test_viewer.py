@@ -141,3 +141,37 @@ def test_stream_frames_captures_and_returns_frames():
     # hold=False so the call returns after one pass; high fps keeps the test fast.
     captured = stream_frames(creature, iter(incoming), fps=1000.0, port=8130, hold=False)
     assert captured == incoming
+
+
+def test_stream_frames_can_open_browser(monkeypatch):
+    pytest.importorskip("viser")
+
+    opened = []
+    monkeypatch.setattr(
+        "creature_lab.viewers.viser_viewer.webbrowser.open",
+        lambda url, new=0: opened.append((url, new)) or True,
+    )
+
+    creature = CreatureSpec.model_validate(CREATURE)
+    frame = FrameState.model_validate(
+        {
+            "t": 0.0,
+            "parts": {
+                "torso": {"position": [0.0, 0.0, 0.0]},
+                "leg": {"position": [0.0, 0.0, 0.0]},
+                "head": {"position": [0.0, 0.0, 0.0]},
+            },
+        }
+    )
+
+    captured = stream_frames(
+        creature,
+        iter([frame]),
+        fps=1000.0,
+        port=8135,
+        hold=False,
+        open_browser=True,
+    )
+
+    assert captured == [frame]
+    assert opened == [("http://localhost:8135", 2)]

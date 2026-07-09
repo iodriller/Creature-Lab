@@ -5,25 +5,63 @@ Use `uv run creature-lab --help` for exact options. This page groups commands by
 ## Start Here
 
 ```bash
-uv run creature-lab demo --no-hold
+python scripts/start.py
+uv run creature-lab demo --open-browser
+uv run creature-lab build
 uv run creature-lab zoo list
 uv run creature-lab zoo run quadruped
 uv run creature-lab report latest
 ```
 
 - `demo` runs a built-in creature in the live browser viewer.
+- `build` opens the browser setup screen for visual creature editing and simulation.
 - `zoo list` shows packaged creatures and tasks.
 - `zoo run <name>` runs a packaged creature and saves a trace.
 - `report latest` summarizes the last saved run.
 
+## Launcher Scripts
+
+The launcher is the recommended first command from a repo checkout:
+
+```bash
+python scripts/start.py
+```
+
+Wrappers are available for common shells:
+
+```powershell
+.\scripts\start.ps1
+```
+
+```bash
+bash scripts/start.sh
+```
+
+Useful options:
+
+| Option | Purpose |
+| --- | --- |
+| `--once` | Run one pass, save the trace, and exit. |
+| `--no-open-browser` | Print the viewer URL without opening a browser tab. |
+| `--creature worm` | Run a different packaged demo creature. |
+| `--creature-path path/to/creature.json` | Run a local CreatureSpec. |
+| `--task path/to/task.json` | Override the default task. |
+| `--port 8090` | Use a different Viser port. |
+| `--full` | Install all optional extras before launching. |
+| `--skip-sync` | Reuse the current environment. |
+| `--dry-run` | Print commands without running them. |
+
 ## Run And Improve
 
 ```bash
+uv run creature-lab build --preset humanoid
+uv run creature-lab build mydude.json --out mydude.json
 uv run creature-lab run examples/quadruped.json --task examples/crawl_forward.json
 uv run creature-lab evolve examples/quadruped.json --task examples/crawl_forward.json --attempts 20
 uv run creature-lab ask "make it crawl farther" examples/tripod.json --task examples/crawl_forward.json --offline
 ```
 
+- `build` edits a CreatureSpec in a Viser browser UI, then saves JSON or simulates directly.
 - `run` simulates one creature/task pair.
 - `evolve` searches for a better body/controller.
 - `ask` applies validated design edits, offline or with an optional LLM provider.
@@ -35,7 +73,7 @@ uv run creature-lab replay runs/<run-id>
 uv run creature-lab inspect runs/<run-id>
 uv run creature-lab diagnose runs/<run-id>
 uv run creature-lab report latest --out report.md
-uv run creature-lab view runs/<run-id>
+uv run creature-lab view runs/<run-id> --open-browser
 uv run creature-lab export latest --gif creature.gif
 ```
 
