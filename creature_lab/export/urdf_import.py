@@ -16,6 +16,9 @@ from dataclasses import dataclass, field
 
 from creature_lab.schema import CreatureSpec
 
+_MAX_URDF_BYTES = 5 * 1024 * 1024
+_MAX_URDF_ELEMENTS = 50_000
+
 
 @dataclass
 class ImportResult:
@@ -117,7 +120,15 @@ def _parse_joint(joint: ET.Element, link_ids: set[str], warnings: list[str]) -> 
 def import_urdf(urdf_text: str) -> ImportResult:
     """Parse URDF text into a (best-effort) CreatureSpec plus skip warnings."""
     warnings: list[str] = []
+    encoded_size = len(urdf_text.encode("utf-8"))
+    if encoded_size > _MAX_URDF_BYTES:
+        raise ValueError(f"URDF is too large ({encoded_size} bytes; max {_MAX_URDF_BYTES})")
+    lowered = urdf_text.lower()
+    if "<!doctype" in lowered or "<!entity" in lowered:
+        raise ValueError("URDF DTD/entity declarations are not allowed")
     robot = ET.fromstring(urdf_text)
+    if sum(1 for _ in robot.iter()) > _MAX_URDF_ELEMENTS:
+        raise ValueError(f"URDF has too many XML elements (max {_MAX_URDF_ELEMENTS})")
 
     parts = [p for link in robot.findall("link") if (p := _parse_link(link, warnings))]
     link_ids = {part["id"] for part in parts}

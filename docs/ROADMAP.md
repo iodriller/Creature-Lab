@@ -1,35 +1,28 @@
 # Roadmap
 
-The MVP is complete. The repo already has schemas, CLI commands, PyBullet and MuJoCo backends,
-Viser replay, exported traces, diagnosis, zoo creatures, local evolution, offline design edits,
-reports, zoo benchmarks, schema export, and tests.
+**The single active roadmap now lives in [`GRAND_PLAN.md`](GRAND_PLAN.md).** It reconciles the
+three earlier plan drafts (archived under [`archive/some-plans/`](archive/some-plans/)) into one
+phased plan. Read that first.
 
-Future work should make the product clearer and easier to trust before adding more simulation
-surface area.
+This page keeps only the durable guard rails.
 
-## Priorities
+## Where things stand
 
-1. Keep onboarding proof fresh: regenerate the demo GIF and zoo gallery for releases.
-2. ✅ Improve benchmark trust: every packaged task now has a calibrated baseline for **both**
-   backends (`baselines/<task>.json` for PyBullet, `baselines/<task>.mujoco.json` for
-   MuJoCo); `bench --backend <name> --zoo` compares against the matching one.
-3. Polish release packaging: publish wheels, add versioned docs. Packaged zoo/data working
-   outside the repo checkout is ✅ verified (built the wheel, installed it into a clean venv,
-   ran `zoo run` from a foreign directory — reproduced the committed baseline score exactly).
-   Publishing to PyPI needs a maintainer with real credentials — out of scope for an agent
-   session; see [`docs/IMPROVEMENT_PLAN_2026.md`](IMPROVEMENT_PLAN_2026.md) Phase 5.
-4. Expand compatibility carefully: keep URDF/MJCF/MuJoCo as bridges, not the main onboarding path.
-5. Add richer physical tasks only after reports, benchmarks, and zoo docs stay stable.
+Version 0.2 is release-ready locally: schemas and controller ABIs are hardened, runs snapshot
+their controllers, packs verify their content, qualification is task-aware, the editor handles
+conflicts safely, showcases have behavioral acceptance tests, and Experiment Autopsy plus the
+Failure Zoo establish the failure-first product wedge. CI covers Linux, Windows, macOS, packaging,
+and a real browser journey. Public PyPI/GitHub publication remains an explicit maintainer action.
 
-See [`docs/IMPROVEMENT_PLAN_2026.md`](IMPROVEMENT_PLAN_2026.md) for the current, more
-detailed improvement plan (report upgrade, terrain, robustness, MAP-Elites gallery, and the
-LLM design loop) — this file stays as the high-level guard rails.
+The next product decision should follow real usage: deepen education/curriculum first, morphology
+research batches second, or undertake the much larger actuator/sensor/calibration work required
+for hardware relevance. Do not imply hardware qualification before choosing and funding that path.
 
 ## Guard Rails
 
 - Do not make new users choose between many backends before they see a creature move.
-- Do not front-load architecture language ahead of the design/run/improve loop.
-- Do not add a dashboard until the CLI and docs feel obvious.
+- Do not front-load architecture language ahead of the design → move → test → improve loop.
+- Keep one authoritative roadmap. New plans update `GRAND_PLAN.md`; they do not spawn a new file.
 - Do not add generic agent orchestration, personas, or memory APIs; Creature Lab is the physical
-  experiment layer.
+  experiment layer, not Agentarium.
 - Do not remove advanced commands that already work; keep them lower in the docs.

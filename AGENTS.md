@@ -10,7 +10,9 @@ The durable contracts are:
 - Every creature is a `CreatureSpec` JSON document.
 - Every task is a `TaskSpec` JSON document.
 - Every episode is an `EpisodeTrace` saved under `runs/`.
-- Every simulator is an adapter behind the same creature/task/trace contracts.
+- Every movement policy can be described as a `ControllerSpec` JSON document (optional; a run
+  defaults to the built-in `sinusoid` gait when none is given).
+- Every simulator is an adapter behind the same creature/task/trace/controller contracts.
 
 PyBullet is the default simulator, but it must remain isolated as one backend rather than the
 shape of the whole project.

@@ -4,11 +4,12 @@ A bipedal body plan: a box torso (root) with a head, two legs, and two arms.
 ``dof`` selects how many actuated hinges:
 
 * ``8``  — legs (hip, knee) and arms (shoulder, elbow), 4 hinges per side.
-* ``12`` — adds an ankle/foot and wrist/hand per side, 6 hinges per side.
+* ``12`` — adds an ankle with a horizontal foot and a wrist/hand per side,
+  6 hinges per side.
 
-All joints hinge in the sagittal plane (about Y). This is a starting skeleton for
-the humanoid kit (see ``docs/IMPROVEMENT_PLAN.md`` Phase 6); it is a valid, simulable
-``CreatureSpec``, not a tuned walker.
+All joints hinge in the sagittal plane (about Y). The 12-DOF proportions, feet,
+and actuator scaling are the body used by the packaged humanoid walking example;
+its measured gait remains a separate controller artifact.
 """
 
 from __future__ import annotations
@@ -26,23 +27,32 @@ def generate_humanoid(
     *,
     height: float = 1.6,
     mass: float = 60.0,
-    dof: Literal[8, 12] = 8,
-    torso_height_ratio: float = 0.30,
+    dof: Literal[8, 12] = 12,
+    torso_height_ratio: float = 0.25,
     torso_width_ratio: float = 0.18,
-    upper_leg_ratio: float = 0.24,
-    lower_leg_ratio: float = 0.24,
+    upper_leg_ratio: float = 0.20,
+    lower_leg_ratio: float = 0.20,
     upper_arm_ratio: float = 0.18,
     lower_arm_ratio: float = 0.16,
     shoulder_extra_ratio: float = 0.04,
     limb_radius_ratio: float = 0.035,
+    hip_spread_ratio: float = 0.5,
+    amplitude: float = 0.4,
+    frequency: float = 1.0,
 ) -> CreatureSpec:
     """Generate a bipedal humanoid skeleton.
 
     Args:
         height: Approximate standing height (m); all segments scale from it.
         mass: Total mass (kg), distributed across the segments.
-        dof: 8 (hip/knee + shoulder/elbow) or 12 (adds ankle/foot + wrist/hand).
+        dof: 12 (default; adds ankle/foot + wrist/hand) or 8 (the explicit
+            footless balance challenge).
         *_ratio: Body proportions as fractions of height, surfaced by the build editor.
+        hip_spread_ratio: Hip lateral offset as a fraction of torso width (wider =
+            a bigger support polygon underneath = more passively stable).
+        amplitude, frequency: Uniform sinusoid gait applied to every hinge motor.
+            Defaults match the original hardcoded values, so every existing caller
+            that doesn't pass these gets an identical creature.
     """
     if dof not in (8, 12):
         raise ValueError("dof must be 8 or 12")
@@ -66,7 +76,9 @@ def generate_humanoid(
     torso_w = torso_width_ratio * height
     upper_leg = upper_leg_ratio * height
     lower_leg = lower_leg_ratio * height
-    foot_len = 0.12 * height
+    foot_len = 0.22 * height
+    foot_width = 0.1125 * height
+    foot_height = 0.05 * height
     upper_arm = upper_arm_ratio * height
     lower_arm = lower_arm_ratio * height
     hand_len = 0.08 * height
@@ -128,16 +140,19 @@ def generate_humanoid(
             {
                 "joint": joint_id,
                 "type": "sinusoid",
-                "amplitude": 0.4,
-                "frequency": 1.0,
+                "amplitude": amplitude,
+                "frequency": frequency,
                 "phase": phase,
+                # A human-scale joint needs more than the small-creature backend
+                # default. Scale torque with mass so dynamic similarity is retained.
+                "max_force": 160.0 * mass / 60.0,
             }
         )
 
     leg_mass = 0.12 * mass
     arm_mass = 0.06 * mass
     for side, sign, base_phase in (("l", 1.0, 0.0), ("r", -1.0, math.pi)):
-        hip_y = sign * torso_w * 0.4
+        hip_y = sign * torso_w * hip_spread_ratio
         shoulder_y = sign * (torso_w * 0.5 + shoulder_extra_ratio * height)
         # Leg chain: hip -> upper leg -> knee -> lower leg (-> ankle -> foot).
         add_capsule(f"upper_leg_{side}", upper_leg, leg_mass)
@@ -153,7 +168,15 @@ def generate_humanoid(
             base_phase,
         )
         if has_feet_hands:
-            add_capsule(f"foot_{side}", foot_len, leg_mass * 0.3)
+            parts.append(
+                {
+                    "id": f"foot_{side}",
+                    "shape": "box",
+                    "size": [foot_len, foot_width, foot_height],
+                    "mass": leg_mass * 0.3,
+                    "color": _LIMB_COLOR,
+                }
+            )
             add_hinge(
                 f"ankle_{side}",
                 f"lower_leg_{side}",
@@ -188,6 +211,17 @@ def generate_humanoid(
                 base_phase,
             )
 
+    # The allocation weights above historically summed to 1.25 for a 12-DOF
+    # humanoid. Normalize at the public boundary so ``mass`` really is total mass.
+    mass_scale = mass / sum(part["mass"] for part in parts)
+    for part in parts:
+        part["mass"] *= mass_scale
+
     return CreatureSpec.model_validate(
-        {"name": "humanoid", "parts": parts, "joints": joints, "motors": motors}
+        {
+            "name": "humanoid_12dof" if dof == 12 else "humanoid_minimal",
+            "parts": parts,
+            "joints": joints,
+            "motors": motors,
+        }
     )

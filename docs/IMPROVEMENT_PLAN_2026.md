@@ -1,5 +1,8 @@
 # Creature Lab — Improvement Plan (2026 H2)
 
+> **Status: Completed / superseded.** This plan's phases shipped. The single active roadmap is now
+> [`GRAND_PLAN.md`](GRAND_PLAN.md); this file is kept for historical context only.
+
 **Date:** 2026-07-07
 **Premise:** The MVP and the eight-phase plan in [`docs/archive/IMPROVEMENT_PLAN.md`](archive/IMPROVEMENT_PLAN.md)
 are complete. The repo has schemas, PyBullet + MuJoCo backends, Viser replay + debug

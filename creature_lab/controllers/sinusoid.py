@@ -14,6 +14,7 @@ def sinusoid_targets(creature: CreatureSpec, t: float) -> dict[str, float]:
     produces the same targets, independent of any physics engine.
     """
     return {
-        motor.joint: motor.amplitude * math.sin(2 * math.pi * motor.frequency * t + motor.phase)
+        motor.joint: motor.offset
+        + motor.amplitude * math.sin(2 * math.pi * motor.frequency * t + motor.phase)
         for motor in creature.motors
     }

@@ -47,10 +47,12 @@ class MuJoCoBackend:
         self._last_score_components: dict[str, float] = {}
         self._damage_fired = False
         self._impulse_fired = False
+        self._seed: int | None = None
 
-    def build(self, creature: CreatureSpec, task: TaskSpec) -> None:
+    def build(self, creature: CreatureSpec, task: TaskSpec, *, seed: int | None = None) -> None:
         self._creature = creature
         self._task = task
+        self._seed = seed
         xml = export_mjcf(
             creature, friction=task.terrain.friction, timestep=task.timestep, terrain=task.terrain
         )
@@ -86,7 +88,7 @@ class MuJoCoBackend:
     def reset(self) -> None:
         if self._creature is None or self._task is None:
             raise RuntimeError("build() must be called before reset()")
-        self.build(self._creature, self._task)
+        self.build(self._creature, self._task, seed=self._seed)
 
     def step(self, dt: float) -> FrameState:
         if self._model is None or self._data is None or self._task is None:
@@ -107,6 +109,10 @@ class MuJoCoBackend:
             self._impulse_fired = True
             events.append(f"impulse:{impulse.part_id}")
 
+        # ``step(dt)`` is part of the backend contract. Keep MuJoCo's actual
+        # integrator step aligned with the requested duration instead of advancing
+        # physics by a stale model timestep while only bookkeeping uses ``dt``.
+        self._model.opt.timestep = dt
         mujoco.mj_step(self._model, self._data)
         if impulse is not None and self._impulse_fired:
             body_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, impulse.part_id)

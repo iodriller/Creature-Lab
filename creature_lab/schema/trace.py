@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from pydantic import Field, field_validator, model_validator
 
 from creature_lab.schema.base import Quaternion, StrictModel, Vector3
@@ -20,6 +22,16 @@ class TraceMeta(StrictModel):
     seed: int | None = None
     creature_hash: str | None = None
     task_hash: str | None = None
+    #: The `--controller` value that produced this episode: a built-in name
+    #: ("sinusoid"/"cpg"/"target_seek") or a controller.json path. None for traces
+    #: saved before controller tracking was added, or ones built without going
+    #: through `cli._build_meta` (e.g. hand-constructed in a test).
+    controller: str | None = None
+    #: Hash and run-relative filename of the exact controller snapshot saved beside
+    #: the trace.  Older traces leave these unset.
+    controller_hash: str | None = None
+    controller_artifact: str | None = None
+    policy_hash: str | None = None
     score_summary: dict[str, float] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
@@ -79,6 +91,15 @@ class EpisodeTrace(StrictModel):
         value = value.strip()
         if not value:
             raise ValueError("trace identifiers must not be blank")
+        return value
+
+    @field_validator("run_id")
+    @classmethod
+    def validate_safe_run_id(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value):
+            raise ValueError("run_id may contain only letters, numbers, '.', '_' and '-'")
+        if value in {".", ".."}:
+            raise ValueError("run_id must name one run directory")
         return value
 
     @model_validator(mode="after")

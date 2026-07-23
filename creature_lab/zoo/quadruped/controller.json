@@ -1,0 +1,30 @@
+{
+  "name": "quadruped_optimized",
+  "type": "sinusoid",
+  "motors": [
+    {
+      "joint": "hip_0l",
+      "amplitude": 0.6649351476666885,
+      "frequency": 1.65644846190636,
+      "phase": -0.6943891780406262
+    },
+    {
+      "joint": "hip_0r",
+      "amplitude": 1.5842717422545691,
+      "frequency": 1.2813758278965723,
+      "phase": 3.109650567259442
+    },
+    {
+      "joint": "hip_1l",
+      "amplitude": 1.6455654710236678,
+      "frequency": 2.8231966276212055,
+      "phase": 4.050210736006159
+    },
+    {
+      "joint": "hip_1r",
+      "amplitude": 1.827645376843859,
+      "frequency": 2.637182574137116,
+      "phase": -0.17019072368809635
+    }
+  ]
+}

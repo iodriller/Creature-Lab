@@ -18,7 +18,9 @@ class ObservationSpec(StrictModel):
     """Which signals are concatenated into the observation vector, in this order."""
 
     include_root_pos: bool = True
+    include_root_orientation: bool = False
     include_root_vel: bool = True
+    include_root_angular_velocity: bool = False
     include_joint_angles: bool = True
     include_joint_velocities: bool = True
     include_contacts: bool = False
@@ -38,4 +40,10 @@ class ActionSpec(StrictModel):
     def validate_clip_range(self) -> ActionSpec:
         if self.clip_range[0] >= self.clip_range[1]:
             raise ValueError("clip_range minimum must be less than maximum")
+        return self
+
+    @model_validator(mode="after")
+    def validate_unique_joints(self) -> ActionSpec:
+        if len(self.joints) != len(set(self.joints)):
+            raise ValueError("action joints must be unique")
         return self

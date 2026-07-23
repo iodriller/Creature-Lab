@@ -4,6 +4,7 @@ import json
 import os
 
 import pytest
+from pydantic import ValidationError
 
 from creature_lab.editor import presets
 from creature_lab.editor.session import EditorSession
@@ -221,3 +222,79 @@ def test_poll_external_changes_detects_edit_and_reload_clears_it(tmp_path):
 
     assert session.creature.name == "hexapod"
     assert session.external_change_pending is False
+
+
+def test_project_autosave_clears_dirty_state(tmp_path):
+    session = EditorSession(template="quadruped")
+    session.bind_project(tmp_path / "project")
+    session.select_part("leg_0l")
+    session.update_selected_part(mass=2.0)
+    assert session.is_dirty is True
+
+    session.autosave()
+
+    assert session.is_dirty is False
+
+
+def test_external_deletion_is_detected_and_autosave_will_not_overwrite_it(tmp_path):
+    project = tmp_path / "project"
+    session = EditorSession(template="quadruped")
+    session.bind_project(project)
+    (project / "task.json").unlink()
+
+    assert session.poll_external_changes() is True
+    session.select_part("leg_0l")
+    session.update_selected_part(mass=2.0)
+    with pytest.raises(RuntimeError, match="changed on disk"):
+        session.autosave()
+    assert not (project / "task.json").exists()
+
+
+def test_reload_is_transactional_when_one_artifact_is_invalid(tmp_path):
+    project = tmp_path / "project"
+    session = EditorSession(template="quadruped")
+    session.bind_project(project)
+    original = session.creature
+    replacement = EditorSession(template="hexapod").creature
+    (project / "creature.json").write_text(replacement.model_dump_json())
+    (project / "task.json").write_text("{}")
+
+    with pytest.raises(ValidationError):
+        session.reload_project()
+
+    assert session.creature == original
+
+
+def test_preview_composes_nested_parent_rotations():
+    half = 2**-0.5
+    creature = CreatureSpec.model_validate(
+        {
+            "name": "rotated",
+            "parts": [
+                {"id": name, "shape": "box", "size": [0.1, 0.1, 0.1], "mass": 1.0}
+                for name in ("root", "middle", "tip")
+            ],
+            "joints": [
+                {
+                    "id": "a",
+                    "parent": "root",
+                    "child": "middle",
+                    "type": "fixed",
+                    "anchor": [1, 0, 0],
+                    "rest_orientation": [half, 0, 0, half],
+                },
+                {
+                    "id": "b",
+                    "parent": "middle",
+                    "child": "tip",
+                    "type": "fixed",
+                    "anchor": [1, 0, 0],
+                },
+            ],
+        }
+    )
+
+    frame = EditorSession(creature=creature).preview_frame()
+
+    assert frame.parts["middle"].position == pytest.approx((1, 0, 0.05))
+    assert frame.parts["tip"].position == pytest.approx((1, 1, 0.05))

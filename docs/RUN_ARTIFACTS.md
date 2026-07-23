@@ -8,6 +8,8 @@ runs/
   <run-id>/
     creature.json
     task.json
+    controller.json # exact controller snapshot
+    policy.zip      # policy controllers only
     trace.json
     lineage.json    # evolve only
     archive.json    # map-elites evolve only
@@ -28,8 +30,25 @@ uv run creature-lab export latest --gif creature.gif
 
 - `creature.json`: the exact `CreatureSpec` used for rendering and reproducibility.
 - `task.json`: the `TaskSpec` used for the episode.
+- `controller.json`: the exact built-in/tuned/policy controller snapshot used for the episode.
+- `policy.zip`: copied beside `controller.json` when the controller is a trained policy. Treat
+  policy files as trusted-code artifacts; do not load an untrusted policy bundle.
 - `trace.json`: the `EpisodeTrace` with poses, joint angles, contacts, scores, events, and
-  metadata.
+  metadata, including controller/policy hashes and the run-relative controller artifact.
+
+## Sharing a Run
+
+`creature-lab export-pack <run>` bundles the exact creature/task/controller/trace plus optional
+policy payload and a reproducibility-hash `manifest.json` into one portable
+directory — nothing left implicit in `runs/` or `latest.txt`:
+
+```bash
+uv run creature-lab export-pack latest --out outputs/my_design_pack
+uv run creature-lab verify-pack outputs/my_design_pack
+```
+
+Version 2 packs hash every byte artifact and each semantic JSON model. Verification detects
+tampering, missing files, unsupported layouts, unsafe bundle paths, and absent policy payloads.
 
 ## Optional Files
 

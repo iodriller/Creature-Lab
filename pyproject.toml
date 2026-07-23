@@ -1,9 +1,29 @@
 [project]
 name = "creature-lab"
-version = "0.1.0"
-description = "Tiny local lab for designing, running, diagnosing, and improving modular robot-creatures from JSON."
+version = "0.2.0"
+description = "Failure-first local workbench for designing, diagnosing, and reproducing modular robot experiments."
 readme = "README.md"
 requires-python = ">=3.11"
+license = { file = "LICENSE" }
+keywords = [
+    "robotics",
+    "simulation",
+    "robot-design",
+    "morphology",
+    "pybullet",
+    "mujoco",
+    "education",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = [
     "pydantic>=2.7",
     "rich>=13.7",
@@ -38,6 +58,21 @@ evolve = [
 ]
 mujoco = [
     "mujoco>=3.0",  # MuJoCo backend + MJCF export round-trip (`run --backend mujoco`)
+]
+browser = [
+    # Drives the real build editor in a headless browser for the first-run smoke
+    # test (`python scripts/browser_smoke.py`). Catches client-side rendering bugs
+    # the fake-GUI unit tests structurally cannot - see docs/BUILD_EDITOR.md.
+    # After install, run `python -m playwright install chromium` once.
+    "playwright>=1.40",
+]
+rl = [
+    # `creature-lab train` (Grand Plan Phase 5, Tier 3): PPO over CreatureEnv via
+    # Stable-Baselines3, which needs the real gymnasium.Env contract - see
+    # creature_lab/rl/gym_env.py for why CreatureEnv itself isn't a gymnasium.Env
+    # directly (its step()/reset() are an older, already-tested 4-tuple API).
+    "gymnasium>=0.29",
+    "stable-baselines3>=2.0",
 ]
 
 [project.scripts]

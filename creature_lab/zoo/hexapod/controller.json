@@ -1,0 +1,42 @@
+{
+  "name": "hexapod_optimized",
+  "type": "sinusoid",
+  "motors": [
+    {
+      "joint": "hip_0l",
+      "amplitude": 1.2258771664961667,
+      "frequency": 1.6636194363362682,
+      "phase": 0.24973298747280545
+    },
+    {
+      "joint": "hip_0r",
+      "amplitude": 1.6730490923330341,
+      "frequency": 2.193326752351067,
+      "phase": 3.0742159552055717
+    },
+    {
+      "joint": "hip_1l",
+      "amplitude": 0.845497052068094,
+      "frequency": 2.210479895043343,
+      "phase": 0.36821867634384076
+    },
+    {
+      "joint": "hip_1r",
+      "amplitude": 1.27573701468208,
+      "frequency": 3.0495288285041977,
+      "phase": 3.51379716407157
+    },
+    {
+      "joint": "hip_2l",
+      "amplitude": 1.3385267497776907,
+      "frequency": 2.1290173323434454,
+      "phase": -0.7833072985411984
+    },
+    {
+      "joint": "hip_2r",
+      "amplitude": 1.5328559676062015,
+      "frequency": 1.5901066986623258,
+      "phase": 3.704582836458987
+    }
+  ]
+}

@@ -141,6 +141,10 @@ class MotorSpec(StrictModel):
     amplitude: float = Field(ge=0)
     frequency: float = Field(ge=0)
     phase: float = 0.0
+    offset: float = 0.0
+    #: Maximum position-servo torque in N·m. ``None`` preserves the historical
+    #: backend default; larger bodies should declare an explicit scaled value.
+    max_force: float | None = Field(default=None, gt=0)
 
     @field_validator("joint")
     @classmethod
@@ -191,10 +195,13 @@ class CreatureSpec(StrictModel):
             raise ValueError("creatures must have exactly one root part")
         self._validate_reachable_acyclic(roots[0], adjacency, part_id_set)
         known_joints = set(joint_ids)
+        joint_types = {joint.id: joint.type for joint in self.joints}
         motor_joints: set[str] = set()
         for motor in self.motors:
             if motor.joint not in known_joints:
                 raise ValueError(f"motor references unknown joint {motor.joint!r}")
+            if joint_types[motor.joint] != JointType.HINGE:
+                raise ValueError(f"motor joint {motor.joint!r} must be a hinge joint")
             if motor.joint in motor_joints:
                 raise ValueError(f"joint {motor.joint!r} has more than one motor")
             motor_joints.add(motor.joint)

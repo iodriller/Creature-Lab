@@ -34,7 +34,14 @@ uv run creature-lab validate examples/quadruped.json --task examples/crawl_forwa
   Non-`plane` terrain builds a deterministic heightfield (see `creature_lab/terrain.py`)
   that both the PyBullet and MuJoCo backends simulate with the same shape; exact contact
   dynamics still differ by backend, same as with creature bodies (see [Concepts](CONCEPTS.md)).
-- `reward` combines forward distance, target progress, energy penalty, and fall penalty.
+- `reward` combines forward distance, target progress, energy penalty, fall penalty, and
+  survival: `forward_distance`/`target_distance` reward movement (weight x displacement/progress
+  in meters), `energy_penalty` subtracts accumulated actuation effort (weight x a raw quantity
+  typically in the tens-to-hundreds over a few seconds — a small-looking weight like `0.01` can
+  still dominate; `0.001` is closer to a real tie-breaker), `fall_penalty` subtracts a fixed
+  amount if the creature has toppled by the end of the episode, and `survival` adds a fixed
+  amount if it has *not* — the positive mirror of `fall_penalty`, needed for a pure balance task
+  (built only from penalties) to be able to score above 0 at all.
 - `target` is optional and currently supports a sphere target.
 - `damage_event` removes one part at a given time.
 - `impulse_event` applies a one-step world-frame force to one part.

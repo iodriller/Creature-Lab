@@ -90,13 +90,13 @@ def test_impulse_event_perturbs_the_body():
 # --- zoo entries --------------------------------------------------------------
 
 
-def test_humanoid_zoo_entries_exist_and_default_to_walk():
+def test_humanoid_zoo_entries_exist_and_default_to_stable_balance():
     from creature_lab.zoo import default_task_name, list_zoo_creatures, zoo_tasks
 
     creatures = list_zoo_creatures()
     assert {"humanoid_minimal", "humanoid_12dof"} <= set(creatures)
     assert set(zoo_tasks("humanoid_minimal")) == {"balance", "walk", "push_recovery"}
-    assert default_task_name("humanoid_minimal") == "walk"
+    assert default_task_name("humanoid_minimal") == "balance"
 
 
 def test_humanoid_minimal_runs_and_saves(tmp_path):

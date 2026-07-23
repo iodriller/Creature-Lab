@@ -164,3 +164,22 @@ def test_rest_orientation_is_normalized_to_unit_length():
     norm = sum(c * c for c in spec.joints[0].rest_orientation) ** 0.5
     assert norm == pytest.approx(1.0)
     assert spec.joints[0].rest_orientation == (0.0, 0.0, 1.0, 0.0)
+
+
+def test_motor_cannot_target_a_fixed_joint():
+    creature = _two_part_creature()
+    creature["joints"][0]["type"] = "fixed"
+    with pytest.raises(ValidationError, match="hinge"):
+        CreatureSpec.model_validate(creature)
+
+
+def test_physical_values_must_be_finite():
+    with pytest.raises(ValidationError):
+        PartSpec.model_validate({"id": "a", "shape": "sphere", "radius": 0.5, "mass": float("inf")})
+
+
+def test_motor_force_must_be_positive_when_declared():
+    creature = _two_part_creature()
+    creature["motors"][0]["max_force"] = 0.0
+    with pytest.raises(ValidationError, match="greater than 0"):
+        CreatureSpec.model_validate(creature)

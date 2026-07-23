@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +19,7 @@ from creature_lab.terrain import describe_terrain
 def _load_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _load_artifacts(
@@ -25,16 +28,20 @@ def _load_artifacts(
     resolved = resolve_run_path(path, runs_dir=runs_dir)
     run_dir = resolved if resolved.is_dir() else resolved.parent
     trace_path = run_dir / "trace.json" if resolved.is_dir() else resolved
-    trace = EpisodeTrace.model_validate_json(trace_path.read_text())
+    trace = EpisodeTrace.model_validate_json(trace_path.read_text(encoding="utf-8"))
 
     creature_path = run_dir / "creature.json"
     task_path = run_dir / "task.json"
     creature = (
-        CreatureSpec.model_validate_json(creature_path.read_text())
+        CreatureSpec.model_validate_json(creature_path.read_text(encoding="utf-8"))
         if creature_path.exists()
         else None
     )
-    task = TaskSpec.model_validate_json(task_path.read_text()) if task_path.exists() else None
+    task = (
+        TaskSpec.model_validate_json(task_path.read_text(encoding="utf-8"))
+        if task_path.exists()
+        else None
+    )
     return run_dir, creature, task, trace
 
 
@@ -59,7 +66,7 @@ def _agent_summary(run_dir: Path) -> dict[str, Any] | None:
     path = run_dir / "agent.json"
     if not path.exists():
         return None
-    trace = AgentTrace.model_validate_json(path.read_text())
+    trace = AgentTrace.model_validate_json(path.read_text(encoding="utf-8"))
     accepted = [step for step in trace.steps if step.accepted and step.attempt > 0]
     invalid = [step for step in trace.steps if not step.valid]
     return {
@@ -83,6 +90,7 @@ def _artifact_paths(run_dir: Path) -> dict[str, str]:
         "design_trace": run_dir / "agent.json",
         "robustness": run_dir / "robustness.json",
         "sim2sim": run_dir / "sim2sim.json",
+        "controller": run_dir / "controller.json",
     }
     return {name: str(path) for name, path in names.items() if path.exists() or name == "run_dir"}
 
@@ -93,15 +101,18 @@ def _reproduce_command(run_dir: Path, backend: str, seed: int | None) -> str | N
         return None
     parts = ["creature-lab", "run", str(creature_path), "--task", str(task_path)]
     parts += ["--backend", backend]
+    controller_path = run_dir / "controller.json"
+    if controller_path.exists():
+        parts += ["--controller", str(controller_path)]
     if seed is not None:
         parts += ["--seed", str(seed)]
-    return " ".join(parts)
+    return subprocess.list2cmdline(parts) if os.name == "nt" else shlex.join(parts)
 
 
 def build_report(path: Path, runs_dir: Path = DEFAULT_RUNS_DIR) -> dict[str, Any]:
     """Build a serializable report for a saved run directory or trace."""
     run_dir, creature, task, trace = _load_artifacts(path, runs_dir)
-    summary = summarize_episode(trace, task)
+    summary = summarize_episode(trace, task, creature)
     meta = trace.meta
 
     diagnosis: dict[str, Any]
@@ -120,8 +131,52 @@ def build_report(path: Path, runs_dir: Path = DEFAULT_RUNS_DIR) -> dict[str, Any
     improvement = _lineage_summary(run_dir) or _agent_summary(run_dir)
     robustness = _load_json(run_dir / "robustness.json")
     sim2sim = _load_json(run_dir / "sim2sim.json")
-    creature_hash = spec_hash(creature) if creature is not None else None
-    task_hash = spec_hash(task) if task is not None else None
+    current_creature_hash = spec_hash(creature) if creature is not None else None
+    current_task_hash = spec_hash(task) if task is not None else None
+    integrity_warnings: list[str] = []
+    if meta is not None:
+        if (
+            meta.creature_hash is not None
+            and current_creature_hash is not None
+            and meta.creature_hash != current_creature_hash
+        ):
+            integrity_warnings.append(
+                "creature.json no longer matches the hash recorded by the run"
+            )
+        if (
+            meta.task_hash is not None
+            and current_task_hash is not None
+            and meta.task_hash != current_task_hash
+        ):
+            integrity_warnings.append("task.json no longer matches the hash recorded by the run")
+        controller_path = run_dir / "controller.json"
+        if meta.controller_hash is not None and not controller_path.exists():
+            integrity_warnings.append("controller.json recorded by the run is missing")
+        elif meta.controller_hash is not None:
+            from creature_lab.schema import ControllerSpec
+
+            current_controller = ControllerSpec.model_validate_json(
+                controller_path.read_text(encoding="utf-8")
+            )
+            if spec_hash(current_controller) != meta.controller_hash:
+                integrity_warnings.append(
+                    "controller.json no longer matches the hash recorded by the run"
+                )
+            if meta.policy_hash is not None and current_controller.policy_file is not None:
+                from creature_lab.exporting import file_hash
+                from creature_lab.io_utils import contained_child
+
+                policy_path = contained_child(
+                    run_dir, current_controller.policy_file, field="policy_file"
+                )
+                if not policy_path.exists():
+                    integrity_warnings.append("policy payload recorded by the run is missing")
+                elif file_hash(policy_path) != meta.policy_hash:
+                    integrity_warnings.append(
+                        "policy payload no longer matches the hash recorded by the run"
+                    )
+    creature_hash = current_creature_hash
+    task_hash = current_task_hash
     creature_hash = creature_hash or (meta.creature_hash if meta else None)
     task_hash = task_hash or (meta.task_hash if meta else None)
     seed = meta.seed if meta else None
@@ -147,7 +202,7 @@ def build_report(path: Path, runs_dir: Path = DEFAULT_RUNS_DIR) -> dict[str, Any
         },
         "score": trace.score,
         "summary": summary.model_dump(),
-        "warnings": summary.warnings,
+        "warnings": [*summary.warnings, *integrity_warnings],
         "diagnosis": diagnosis,
         "improvement": improvement,
         "robustness": robustness,
@@ -159,6 +214,9 @@ def build_report(path: Path, runs_dir: Path = DEFAULT_RUNS_DIR) -> dict[str, Any
             "seed": seed,
             "creature_hash": creature_hash,
             "task_hash": task_hash,
+            "controller_hash": meta.controller_hash if meta else None,
+            "policy_hash": meta.policy_hash if meta else None,
+            "integrity_warnings": integrity_warnings,
             "backend": trace.backend,
             "backend_version": meta.backend_version if meta else None,
             "command": _reproduce_command(run_dir, trace.backend, seed),
@@ -317,6 +375,7 @@ def report_to_markdown(report: dict[str, Any]) -> str:
             f"- Seed: {_format_value(repro.get('seed'))}",
             f"- Creature hash: {_format_value(repro.get('creature_hash'))}",
             f"- Task hash: {_format_value(repro.get('task_hash'))}",
+            f"- Controller hash: {_format_value(repro.get('controller_hash'))}",
         ]
     )
     if repro.get("command"):

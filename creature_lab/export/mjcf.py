@@ -172,18 +172,23 @@ def export_mjcf(
         _add_ground(mujoco, worldbody, friction, terrain)
     _add_body(worldbody, root, None, parts_by_id, children_by_parent)
 
-    motored = {motor.joint for motor in creature.motors}
-    if motored:
+    hinges = [joint for joint in creature.joints if joint.type == JointType.HINGE]
+    if hinges:
         actuator = ET.SubElement(mujoco, "actuator")
-        for joint in creature.joints:
-            if joint.id in motored and joint.type == JointType.HINGE:
-                ET.SubElement(
-                    actuator,
-                    "position",
-                    name=f"act_{joint.id}",
-                    joint=joint.id,
-                    kp=_num(_DEFAULT_KP),
-                )
+        motor_force = {motor.joint: motor.max_force for motor in creature.motors}
+        # Export a servo for every hinge. Open-loop controllers still command only
+        # MotorSpec joints, while ActionSpec can intentionally address any hinge in
+        # the same way on both backends.
+        for joint in hinges:
+            attrs = {
+                "name": f"act_{joint.id}",
+                "joint": joint.id,
+                "kp": _num(_DEFAULT_KP),
+            }
+            force = motor_force.get(joint.id)
+            if force is not None:
+                attrs.update(forcelimited="true", forcerange=f"-{_num(force)} {_num(force)}")
+            ET.SubElement(actuator, "position", **attrs)
 
     if creature.joints:
         contact = ET.SubElement(mujoco, "contact")

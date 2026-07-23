@@ -24,4 +24,12 @@ labels: bug
 
 ## Artifacts
 
-Attach or paste the relevant `report latest --json` output when possible.
+Prefer a verified design pack—it contains the exact creature, task, controller, trace, and hashes:
+
+```bash
+creature-lab export-pack latest --out creature-lab-bug-pack
+creature-lab verify-pack creature-lab-bug-pack
+```
+
+Attach the pack, or paste `report latest --json` when a pack cannot be shared. Policy packs may
+contain serialized code; do not attach secrets or a policy you are not allowed to redistribute.

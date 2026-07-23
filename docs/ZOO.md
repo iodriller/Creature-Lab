@@ -14,12 +14,12 @@ uv run creature-lab report latest
 | Creature | Default Task | Useful For | Common Failure To Inspect |
 | --- | --- | --- | --- |
 | `quadruped` | `crawl_forward` | First demo, locomotion, challenge pack | Contact balance, motor limits, sideways drift |
-| `worm` | `crawl_forward` | Simple body wave locomotion | High joint effort with low forward displacement |
-| `tripod` | `crawl_forward` | Diagnosis examples | Wiggle-in-place behavior and weak thrust |
+| `worm` | `crawl_forward` | Rollover challenge | Fast body wave with unstable final orientation |
+| `tripod` | `crawl_forward` | Diagnosis challenge | Asymmetric support and tipping |
 | `hexapod` | `crawl_forward` | More contacts and gait comparison | Single-limb drag or inefficient phases |
 | `damaged_quadruped` | `recover` | Damage/recovery runs | Loss of contact after the damage event |
-| `humanoid_minimal` | `walk` | Biped balance and push recovery | Early falls and narrow stance |
-| `humanoid_12dof` | `walk` | Higher-DOF humanoid experiments | Knee limits, arm swing, balance |
+| `humanoid_minimal` | `balance` | Challenge: diagnose a footless biped | No feet and missing roll control |
+| `humanoid_12dof` | `walk` | Slow, inspectable biped walking | Lateral drift and backend sensitivity |
 
 ## Challenge Pack
 
@@ -42,6 +42,42 @@ List exact creature/task availability with:
 
 ```bash
 uv run creature-lab zoo list
+```
+
+## Showcase Contracts And Optimized Gaits
+
+`quadruped`, `hexapod`, `tripod`, `worm`, and `humanoid_12dof` each ship a measured
+`controller.json`. `zoo run` selects the `curated` controller by default: the packaged gait for
+an exact matching body, posture feedback for edited humanoids, and a safe fallback otherwise.
+
+```bash
+uv run creature-lab zoo run quadruped
+uv run creature-lab zoo run quadruped --controller sinusoid  # raw baseline
+uv run creature-lab zoo run humanoid_12dof --task walk --controller optimized
+uv run creature-lab zoo check-showcases
+```
+
+Measured improvement over the default sinusoid gait on `crawl_forward`: quadruped 0.57 → 1.97
+(3.4x), hexapod 0.54 → 1.68 (3.1x), worm 0.93 → 1.51 (1.6x), tripod −0.68 → 0.94 (its default
+gait actually scores worse than standing still; optimization fixes that outright). `zoo list`
+marks which creatures have one and labels unstable entries as `challenge`. `check-showcases`
+runs every promoted example against a minimum score and no-fall contract. Produce your own with
+`creature-lab optimize` (see [CLI Reference](CLI_REFERENCE.md)). The 12-DOF humanoid's packaged
+offset gait moves about **0.42 m forward in 5 s without falling** on PyBullet and remains upright
+for a measured 30 s run. Its feet alternate contact, but the motion is intentionally described as
+a slow stepping/shuffling baseline—not a polished dynamic walk. The same gait stays upright but
+drifts slightly backward on MuJoCo, and longer PyBullet runs accumulate lateral drift because the
+body has no roll-control joint. Those are tracked limitations, not hidden success claims (see
+[Known Issues](KNOWN_ISSUES.md)). `humanoid_minimal` has no feet and remains a labeled challenge.
+
+## Failure Zoo
+
+The separate Failure Zoo packages intentionally broken body/controller/task combinations with
+an expected causal category. Export one, inspect the JSON, run `autopsy`, and try a fix:
+
+```bash
+uv run creature-lab failure list
+uv run creature-lab failure export frozen-gait --out outputs/frozen-gait
 ```
 
 ## Benchmarks

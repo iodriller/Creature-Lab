@@ -13,6 +13,7 @@ The creature *body is the editable part*: the same env code runs any CreatureSpe
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from creature_lab.schema import (
@@ -37,6 +38,38 @@ def _hinge_joint_ids(creature: CreatureSpec) -> list[str]:
     return sorted(j.id for j in creature.joints if j.type == JointType.HINGE)
 
 
+def default_observation_spec(task: TaskSpec) -> ObservationSpec:
+    """The default policy ABI, including task context whenever a target exists."""
+    return ObservationSpec(
+        include_root_orientation=True,
+        include_root_angular_velocity=True,
+        include_target_vector=task.target is not None,
+    )
+
+
+def _angular_velocity(
+    current: tuple[float, float, float, float],
+    previous: tuple[float, float, float, float],
+    dt: float,
+) -> tuple[float, float, float]:
+    """Finite-difference quaternion angular velocity, scalar-first."""
+    pw, px, py, pz = previous
+    cw, cx, cy, cz = current
+    # current * conjugate(previous)
+    w = cw * pw + cx * px + cy * py + cz * pz
+    x = -cw * px + cx * pw - cy * pz + cz * py
+    y = -cw * py + cx * pz + cy * pw - cz * px
+    z = -cw * pz - cx * py + cy * px + cz * pw
+    if w < 0.0:  # shortest equivalent quaternion arc
+        w, x, y, z = -w, -x, -y, -z
+    vector_norm = math.sqrt(x * x + y * y + z * z)
+    if vector_norm < 1e-12:
+        return (0.0, 0.0, 0.0)
+    angle = 2.0 * math.atan2(vector_norm, max(-1.0, min(1.0, w)))
+    scale = angle / (vector_norm * dt)
+    return (x * scale, y * scale, z * scale)
+
+
 class CreatureEnv:
     """Step-by-step control of a creature through a physics backend."""
 
@@ -51,7 +84,7 @@ class CreatureEnv:
     ) -> None:
         self.creature = creature
         self.task = task
-        self.obs_spec = obs_spec or ObservationSpec()
+        self.obs_spec = obs_spec or default_observation_spec(task)
         self.action_spec = action_spec or ActionSpec()
 
         self._hinges = _hinge_joint_ids(creature)
@@ -90,7 +123,9 @@ class CreatureEnv:
         spec = self.obs_spec
         size = 0
         size += 3 if spec.include_root_pos else 0
+        size += 4 if spec.include_root_orientation else 0
         size += 3 if spec.include_root_vel else 0
+        size += 3 if spec.include_root_angular_velocity else 0
         size += len(self._hinges) if spec.include_joint_angles else 0
         size += len(self._hinges) if spec.include_joint_velocities else 0
         size += len(self._part_ids) if spec.include_contacts else 0
@@ -101,7 +136,7 @@ class CreatureEnv:
 
     def reset(self, seed: int | None = None) -> np.ndarray:
         """Rebuild the episode and return the initial observation."""
-        self._backend.build(self.creature, self.task)
+        self._backend.build(self.creature, self.task, seed=seed)
         self._steps = 0
         self._prev_score = 0.0
         self._prev_frame = None
@@ -116,7 +151,8 @@ class CreatureEnv:
         import numpy as np
 
         action = np.asarray(action, dtype=float).reshape(-1)
-        targets = self._action_to_targets(action)
+        clipped_action = self._clip_action(action)
+        targets = self._action_to_targets(clipped_action)
         self._apply(targets)
 
         frame = self._backend.step(self.task.timestep)
@@ -135,7 +171,7 @@ class CreatureEnv:
         }
 
         recorded = frame.model_copy(
-            update={"observations": obs.tolist(), "actions": action.tolist()}
+            update={"observations": obs.tolist(), "actions": clipped_action.tolist()}
         )
         self.frames.append(recorded)
         self._prev_score = frame.score
@@ -165,6 +201,16 @@ class CreatureEnv:
                 targets[joint_id] = clipped
         return targets
 
+    def _clip_action(self, action: np.ndarray) -> np.ndarray:
+        import numpy as np
+
+        if action.shape[0] != len(self._controlled):
+            raise ValueError(
+                f"action has {action.shape[0]} values, expected {len(self._controlled)}"
+            )
+        lo, hi = self.action_spec.clip_range
+        return np.clip(action, lo, hi)
+
     def _apply(self, targets: dict[str, float]) -> None:
         mode = self.action_spec.mode
         if hasattr(self._backend, "apply_joint_control"):
@@ -190,13 +236,23 @@ class CreatureEnv:
         dt = self.task.timestep
         values: list[float] = []
         root_pos = frame.parts[self._root].position
+        root_orientation = frame.parts[self._root].orientation
 
         if spec.include_root_pos:
             values.extend(root_pos)
+        if spec.include_root_orientation:
+            values.extend(root_orientation)
         if spec.include_root_vel:
             if prev is not None:
                 prev_pos = prev.parts[self._root].position
                 values.extend((root_pos[i] - prev_pos[i]) / dt for i in range(3))
+            else:
+                values.extend((0.0, 0.0, 0.0))
+        if spec.include_root_angular_velocity:
+            if prev is not None:
+                values.extend(
+                    _angular_velocity(root_orientation, prev.parts[self._root].orientation, dt)
+                )
             else:
                 values.extend((0.0, 0.0, 0.0))
         if spec.include_joint_angles:

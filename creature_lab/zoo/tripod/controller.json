@@ -1,0 +1,24 @@
+{
+  "name": "tripod_optimized",
+  "type": "sinusoid",
+  "motors": [
+    {
+      "joint": "hip_a",
+      "amplitude": 0.7668049908239115,
+      "frequency": 2.0541111668817105,
+      "phase": 0.28949364732934274
+    },
+    {
+      "joint": "hip_b",
+      "amplitude": 1.1042660304629741,
+      "frequency": 2.0325381425427325,
+      "phase": 1.8131009408672862
+    },
+    {
+      "joint": "hip_c",
+      "amplitude": 0.39025438065227136,
+      "frequency": 1.6077171856788592,
+      "phase": 4.3160520614243465
+    }
+  ]
+}

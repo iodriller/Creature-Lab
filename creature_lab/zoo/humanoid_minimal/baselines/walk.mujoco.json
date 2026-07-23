@@ -2,13 +2,13 @@
   "creature": "humanoid_minimal",
   "task": "walk",
   "backend": "mujoco 3.10.0",
-  "best_score": 0.0,
+  "best_score": -2.59e-10,
   "score_summary": {
-    "forward": 0.0,
+    "forward": -2.59e-10,
     "target": 0.0,
     "energy": -0.0,
     "fall": 0.0,
-    "total": 0.0
+    "total": -2.59e-10
   },
   "note": "open-loop sinusoid controller baseline (MuJoCo backend)"
 }

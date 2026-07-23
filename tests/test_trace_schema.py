@@ -89,3 +89,16 @@ def test_trace_requires_at_least_one_frame():
     }
     with pytest.raises(ValidationError):
         EpisodeTrace.model_validate(spec)
+
+
+def test_trace_run_id_cannot_escape_the_runs_directory():
+    spec = {
+        "run_id": "../outside",
+        "creature_name": "c",
+        "task_name": "t",
+        "backend": "pybullet",
+        "score": 0.0,
+        "frames": [_frame(0.0)],
+    }
+    with pytest.raises(ValidationError, match="run_id"):
+        EpisodeTrace.model_validate(spec)

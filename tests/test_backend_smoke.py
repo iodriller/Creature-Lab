@@ -212,3 +212,26 @@ def test_rest_orientation_orients_child_link(backend):
     if orientation[0] < 0:
         orientation = tuple(-component for component in orientation)
     assert orientation == pytest.approx((half, half, 0.0, 0.0), abs=1e-4)
+
+
+def test_branched_multilevel_links_keep_their_spec_identity(backend):
+    """PyBullet reorders multibody links depth-first.
+
+    A shallow quadruped cannot expose a stale link-index map.  The humanoid has
+    several sibling chains with grandchildren, so every mirrored part must still
+    resolve to the symmetric physics link immediately after build.
+    """
+    from creature_lab.scaffold import generate_humanoid
+
+    creature = generate_humanoid(dof=12, amplitude=0.0)
+    task = TaskSpec.model_validate({"name": "mapping", "duration": 0.1})
+
+    backend.build(creature, task)
+    frame = backend.observe()
+
+    for stem in ("upper_leg", "lower_leg", "foot", "upper_arm", "lower_arm", "hand"):
+        left = frame.parts[f"{stem}_l"].position
+        right = frame.parts[f"{stem}_r"].position
+        assert left[0] == pytest.approx(right[0], abs=1e-9)
+        assert left[1] == pytest.approx(-right[1], abs=1e-9)
+        assert left[2] == pytest.approx(right[2], abs=1e-9)

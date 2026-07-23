@@ -24,13 +24,15 @@ def score_components(
     - ``target_progress``: how much closer to the target than at the start
       (positive = moved toward it).
     - ``energy``: accumulated actuation effort (always penalized).
-    - ``fallen``: whether the creature has toppled.
+    - ``fallen``: whether the creature has toppled - also gates ``survival``
+      (the mirror image of ``fall_penalty``: reward for *not* having fallen).
     """
     components = {
         "forward": reward.forward_distance * forward_distance,
         "target": reward.target_distance * target_progress,
         "energy": -reward.energy_penalty * energy,
         "fall": -reward.fall_penalty if fallen else 0.0,
+        "survival": 0.0 if fallen else reward.survival,
     }
     components["total"] = sum(components.values())
     return components

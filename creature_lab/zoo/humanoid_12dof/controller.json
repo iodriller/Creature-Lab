@@ -1,0 +1,18 @@
+{
+  "name": "humanoid_walk_optimized",
+  "type": "sinusoid",
+  "motors": [
+    {"joint": "hip_l", "amplitude": 0.06175983, "frequency": 0.59366193, "phase": -0.14953295, "offset": -0.26559449},
+    {"joint": "knee_l", "amplitude": 0.13486493, "frequency": 0.59366193, "phase": 1.57425437, "offset": -0.18859700},
+    {"joint": "ankle_l", "amplitude": 0.04803215, "frequency": 0.59366193, "phase": 3.08204705, "offset": 0.08743940},
+    {"joint": "shoulder_l", "amplitude": 0.19256411, "frequency": 0.59366193, "phase": 3.43399273, "offset": 0.0},
+    {"joint": "elbow_l", "amplitude": 0.0, "frequency": 0.59366193, "phase": 0.0, "offset": 0.0},
+    {"joint": "wrist_l", "amplitude": 0.0, "frequency": 0.59366193, "phase": 0.0, "offset": 0.0},
+    {"joint": "hip_r", "amplitude": 0.06175983, "frequency": 0.59366193, "phase": 2.99205970, "offset": -0.26559449},
+    {"joint": "knee_r", "amplitude": 0.13486493, "frequency": 0.59366193, "phase": 4.71584702, "offset": -0.18859700},
+    {"joint": "ankle_r", "amplitude": 0.04803215, "frequency": 0.59366193, "phase": 6.22363970, "offset": 0.08743940},
+    {"joint": "shoulder_r", "amplitude": 0.19256411, "frequency": 0.59366193, "phase": 0.29240008, "offset": 0.0},
+    {"joint": "elbow_r", "amplitude": 0.0, "frequency": 0.59366193, "phase": 0.0, "offset": 0.0},
+    {"joint": "wrist_r", "amplitude": 0.0, "frequency": 0.59366193, "phase": 0.0, "offset": 0.0}
+  ]
+}

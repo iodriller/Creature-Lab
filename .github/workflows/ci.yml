@@ -5,42 +5,88 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  checks:
+  quality-and-package:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v5
       - name: Set up Python
         run: uv python install 3.11
-      - name: Sync dependencies
-        # All test-exercised extras. The `llm` extra (litellm) is intentionally
-        # excluded: the online `ask` path needs an API key and is not run in CI,
-        # while the offline agent path and the LLM response parser need no provider.
-        run: >
-          uv sync --extra dev --extra sim --extra viz --extra export
-          --extra evolve --extra mujoco
-      - name: Ruff check
-        run: uv run ruff check .
-      - name: Ruff format check
-        run: uv run ruff format --check .
-      - name: Pytest
+      - name: Sync all local/test integrations
+        run: uv sync --all-extras
+      - name: Ruff
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: Full test suite
         run: uv run pytest
-      - name: CLI smoke (doctor + validate --task)
+      - name: CLI and behavioral contracts
         run: |
           uv run creature-lab doctor
           uv run creature-lab validate examples/tripod.json --task examples/crawl_forward.json
-      - name: Build wheel and smoke-test it from a clean install
-        # Packaged zoo data (creatures/tasks/baselines) must work from an installed wheel,
-        # outside the checkout — not just "uv run" against the source tree. Regressed
-        # silently once before (a renamed package directory broke the build entirely).
+          uv run creature-lab zoo validate-all
+          uv run creature-lab zoo check-showcases
+      - name: Build wheel and source distribution
+        run: uv build
+      - name: Smoke-test the installed wheel outside the checkout
         run: |
-          rm -rf dist
-          uv build
           python3 -m venv /tmp/wheel-venv
           /tmp/wheel-venv/bin/pip install --quiet "$(ls dist/*.whl)[sim]"
           mkdir -p /tmp/wheel-smoke
           cd /tmp/wheel-smoke
           /tmp/wheel-venv/bin/creature-lab doctor
-          /tmp/wheel-venv/bin/creature-lab zoo run quadruped --task crawl_forward --runs-dir ./runs
+          /tmp/wheel-venv/bin/creature-lab zoo run quadruped --runs-dir ./runs
+
+  supported-platforms:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.11"
+          - os: windows-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.11"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Set up Python
+        run: uv python install ${{ matrix.python }}
+      - name: Sync runtime and test dependencies
+        run: uv sync --extra dev --extra sim --extra viz --extra export --extra evolve
+      - name: Platform test suite
+        run: uv run pytest -m "not optional_backend"
+      - name: Launcher and CLI smoke
+        run: |
+          uv run python scripts/start.py --dry-run
+          uv run creature-lab validate examples/tripod.json --task examples/crawl_forward.json
+
+  browser-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Install editor and browser dependencies
+        run: |
+          uv sync --extra sim --extra viz --extra browser
+          uv run playwright install --with-deps chromium
+      - name: Real first-run browser journey and process cleanup
+        run: uv run python scripts/browser_smoke.py

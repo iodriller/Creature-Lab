@@ -15,7 +15,8 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from creature_lab.schema import EpisodeSummary, EpisodeTrace, TaskSpec
+from creature_lab.diagnosis import first_fall_time
+from creature_lab.schema import CreatureSpec, EpisodeSummary, EpisodeTrace, TaskSpec
 
 _PROVIDER_KEYS = (
     "OPENAI_API_KEY",
@@ -145,8 +146,17 @@ def _examples_check() -> DoctorCheck:
     return DoctorCheck("examples run", "ok", "built-in creature simulates one step")
 
 
-def summarize_episode(trace: EpisodeTrace, task: TaskSpec | None = None) -> EpisodeSummary:
-    """Compute a compact summary of a trace (pure; no backend)."""
+def summarize_episode(
+    trace: EpisodeTrace, task: TaskSpec | None = None, creature: CreatureSpec | None = None
+) -> EpisodeSummary:
+    """Compute a compact summary of a trace (pure; no backend).
+
+    ``creature``, when given, switches ``fell`` to reward-independent root-part
+    orientation detection (``creature_lab.diagnosis.first_fall_time``). Without it,
+    ``fell`` falls back to the trace's ``fall`` score component, which is only
+    nonzero when the task sets ``reward.fall_penalty`` - a creature that visibly
+    toppled on a task without one would otherwise always report ``fell=False``.
+    """
     frames = trace.frames
     # Total simulated time: the final frame's timestamp (the sim began at t=0, first frame at dt).
     duration = frames[-1].t
@@ -163,12 +173,17 @@ def summarize_episode(trace: EpisodeTrace, task: TaskSpec | None = None) -> Epis
 
     component_scores: dict[str, float] = {}
     warnings: list[str] = []
-    fell: bool | None = None
     if trace.meta is not None:
         component_scores = dict(trace.meta.score_summary)
         warnings = list(trace.meta.warnings)
-        if "fall" in component_scores:
-            fell = component_scores["fall"] < 0
+
+    fell: bool | None
+    if creature is not None:
+        fell = first_fall_time(trace, creature) is not None
+    elif "fall" in component_scores:
+        fell = component_scores["fall"] < 0
+    else:
+        fell = None
 
     damage_events = [
         event for frame in frames for event in frame.events if event.startswith("damage:")

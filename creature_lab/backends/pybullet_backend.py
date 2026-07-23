@@ -35,7 +35,7 @@ def backend_version() -> str:
 
 _DEFAULT_COLOR = (0.6, 0.6, 0.6)
 _DEFAULT_HINGE_LIMIT = (-math.pi, math.pi)
-_MOTOR_MAX_FORCE = 5.0
+_DEFAULT_MOTOR_MAX_FORCE = 5.0
 
 
 def _collision_geometry(part: PartSpec) -> tuple[int, dict]:
@@ -113,10 +113,12 @@ class PyBulletBackend:
         self._last_score_components: dict[str, float] = {}
         self._damage_fired = False
         self._impulse_fired = False
+        self._seed: int | None = None
 
-    def build(self, creature: CreatureSpec, task: TaskSpec) -> None:
+    def build(self, creature: CreatureSpec, task: TaskSpec, *, seed: int | None = None) -> None:
         self._creature = creature
         self._task = task
+        self._seed = seed
         pybullet.resetSimulation(physicsClientId=self._client)
         pybullet.setGravity(0, 0, -9.81, physicsClientId=self._client)
         self._plane_id = _build_ground(task, self._client)
@@ -137,7 +139,7 @@ class PyBulletBackend:
     def reset(self) -> None:
         if self._creature is None or self._task is None:
             raise RuntimeError("build() must be called before reset()")
-        self.build(self._creature, self._task)
+        self.build(self._creature, self._task, seed=self._seed)
 
     def step(self, dt: float) -> FrameState:
         if self._creature is None or self._task is None:
@@ -184,7 +186,7 @@ class PyBulletBackend:
                 self._joint_link[motor.joint],
                 controlMode=pybullet.POSITION_CONTROL,
                 targetPosition=targets[motor.joint],
-                force=_MOTOR_MAX_FORCE,
+                force=motor.max_force or _DEFAULT_MOTOR_MAX_FORCE,
                 physicsClientId=self._client,
             )
 
@@ -198,6 +200,10 @@ class PyBulletBackend:
         if self._creature is None or self._body_id is None:
             raise RuntimeError("build() must be called before apply_joint_control()")
         joint_child = {joint.id: joint.child for joint in self._creature.joints}
+        joint_force = {
+            motor.joint: motor.max_force or _DEFAULT_MOTOR_MAX_FORCE
+            for motor in self._creature.motors
+        }
         for joint_id, value in targets.items():
             link = self._joint_link.get(joint_id)
             if link is None or joint_child.get(joint_id) in self._damaged_parts:
@@ -208,7 +214,7 @@ class PyBulletBackend:
                     link,
                     pybullet.POSITION_CONTROL,
                     targetPosition=value,
-                    force=_MOTOR_MAX_FORCE,
+                    force=joint_force.get(joint_id, _DEFAULT_MOTOR_MAX_FORCE),
                     physicsClientId=self._client,
                 )
             elif mode == "velocity":
@@ -217,7 +223,7 @@ class PyBulletBackend:
                     link,
                     pybullet.VELOCITY_CONTROL,
                     targetVelocity=value,
-                    force=_MOTOR_MAX_FORCE,
+                    force=joint_force.get(joint_id, _DEFAULT_MOTOR_MAX_FORCE),
                     physicsClientId=self._client,
                 )
             elif mode == "torque":
@@ -297,18 +303,26 @@ class PyBulletBackend:
         root_id = next(part.id for part in creature.parts if part.id not in joint_by_child)
         root_part = parts_by_id[root_id]
 
-        # Breadth-first traversal assigns each non-root part a 0-based link index
-        # matching its position in the link arrays below.
+        # PyBullet canonicalises a multibody's link arrays into depth-first order.
+        # Supplying breadth-first arrays appears to work for shallow creatures, but
+        # PyBullet then returns joint/link indices in a different order for branched,
+        # multi-level bodies (notably the humanoid).  The old bookkeeping therefore
+        # read ``foot_r`` from an arm link and sent several motor targets to the wrong
+        # joints.  Build in the same stable depth-first order PyBullet exposes so our
+        # part/joint maps remain exact.
         order: list[tuple] = []
         self._link_index = {root_id: -1}
-        queue = [root_id]
-        while queue:
-            current_id = queue.pop(0)
+        stack = [(root_id, iter(joints_by_parent[root_id]))]
+        while stack:
+            current_id, children = stack[-1]
+            joint = next(children, None)
+            if joint is None:
+                stack.pop()
+                continue
             parent_link = self._link_index[current_id]
-            for joint in joints_by_parent[current_id]:
-                order.append((parts_by_id[joint.child], joint, parent_link))
-                self._link_index[joint.child] = len(order) - 1
-                queue.append(joint.child)
+            order.append((parts_by_id[joint.child], joint, parent_link))
+            self._link_index[joint.child] = len(order) - 1
+            stack.append((joint.child, iter(joints_by_parent[joint.child])))
         self._part_by_link = {index: part_id for part_id, index in self._link_index.items()}
 
         base_collision_geom, base_collision_kwargs = _collision_geometry(root_part)

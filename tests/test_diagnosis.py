@@ -1,7 +1,7 @@
 """Tests for the failure-diagnosis engine (synthetic traces, no physics)."""
 
 from creature_lab.diagnosis import diagnose
-from creature_lab.schema import CreatureSpec, EpisodeTrace
+from creature_lab.schema import CreatureSpec, EpisodeTrace, TaskSpec
 
 
 def _creature(motor_amplitude: float = 0.3, limit=(-1.0, 1.0)) -> CreatureSpec:
@@ -145,6 +145,45 @@ def test_healthy_run_reports_no_patterns():
         )
     result = diagnose(_trace(frames), _creature())
     assert result.patterns == []
+
+
+def _task_with_target(x: float, y: float = 0.0) -> TaskSpec:
+    return TaskSpec.model_validate(
+        {
+            "name": "reach",
+            "duration": 3.0,
+            "target": {"position": [x, y, 0.15], "radius": 0.15},
+            "reward": {"target_distance": 1.0},
+        }
+    )
+
+
+def test_target_not_approached_is_detected_when_stuck_near_the_start():
+    task = _task_with_target(2.0)  # far ahead; the body below barely moves
+    frames = [
+        _frame(t / 10, x=0.001 * t, contacts=[_ground("leg_a"), _ground("leg_b")])
+        for t in range(30)
+    ]
+    result = diagnose(_trace(frames), _creature(), task)
+    assert "target_not_approached" in result.patterns
+    assert result.metrics["target_progress"] < 0.05
+
+
+def test_target_not_approached_absent_when_closing_in_on_the_target():
+    task = _task_with_target(1.0)
+    frames = [
+        _frame(t / 10, x=0.03 * t, contacts=[_ground("leg_a"), _ground("leg_b")]) for t in range(30)
+    ]
+    result = diagnose(_trace(frames), _creature(), task)
+    assert "target_not_approached" not in result.patterns
+    assert result.metrics["target_progress"] > 0.05
+
+
+def test_target_metrics_absent_when_task_has_no_target():
+    frames = [_frame(t / 10, x=0.03 * t, contacts=[_ground("leg_a")]) for t in range(30)]
+    result = diagnose(_trace(frames), _creature())  # no task at all
+    assert "target_progress" not in result.metrics
+    assert "target_not_approached" not in result.patterns
 
 
 def test_diagnose_runs_on_a_real_episode():

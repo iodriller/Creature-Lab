@@ -37,6 +37,11 @@ Pick a different starting preset:
 python scripts/start.py --creature humanoid
 ```
 
+For Humanoid, keep **Move forward**, click **Start**, switch the phase selector to **Test**, and
+click **Simulate**. The default curated controller is the packaged 12-DOF walking gait. After the
+result appears, **Back to Design** restores the editable standing pose instead of leaving the scene
+stuck on a replay frame.
+
 Presets are `quadruped`, `hexapod`, `worm`, or `humanoid`. Add `--project outputs/mydude` (via
 `uv run creature-lab build --project outputs/mydude`) to bind the editor to a directory whose
 `creature.json`/`task.json` autosave on every edit and stay in sync if you edit them by hand. See
@@ -78,8 +83,32 @@ uv run creature-lab zoo run worm
 
 Zoo creatures are packaged with the library, so these commands work from an installed wheel.
 Each saved run updates `runs/latest.txt`, which lets follow-up commands accept `latest`.
+The Zoo selects its measured `curated` controller by default; add `--controller sinusoid` only
+when you want the raw teaching baseline. Verify all promoted examples with:
 
-## 4. Improve One Creature
+```bash
+uv run creature-lab zoo check-showcases
+```
+
+## 4. Find Out Why It Failed
+
+Run a complete autopsy. It compares the selected controller with a curated counterfactual,
+evaluates task-aware perturbations, and writes HTML/Markdown/JSON plus a verified pack:
+
+```bash
+uv run creature-lab autopsy examples/quadruped.json \
+  --task examples/crawl_forward.json --controller sinusoid
+uv run creature-lab verify-pack outputs/autopsy_<run-id>/experiment_pack
+```
+
+Learn from an intentionally broken experiment:
+
+```bash
+uv run creature-lab failure list
+uv run creature-lab failure export frozen-gait --out outputs/frozen-gait
+```
+
+## 5. Improve One Creature
 
 Reopen the build editor on a specific preset any time (this is what step 1 launches by default):
 
@@ -102,7 +131,7 @@ For a deterministic no-provider design loop:
 uv run creature-lab ask "make it crawl farther" examples/tripod.json --task examples/crawl_forward.json --offline
 ```
 
-## 5. Replay Or Export A Run
+## 6. Replay Or Export A Run
 
 ```bash
 uv run creature-lab view runs/<run-id>

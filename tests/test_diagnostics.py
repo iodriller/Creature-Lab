@@ -2,7 +2,7 @@
 
 import creature_lab.diagnostics as diagnostics
 from creature_lab.diagnostics import collect_doctor_checks, summarize_episode
-from creature_lab.schema import EpisodeTrace, TaskSpec
+from creature_lab.schema import CreatureSpec, EpisodeTrace, TaskSpec
 
 
 def test_doctor_checks_cover_platform_and_extras():
@@ -79,6 +79,101 @@ def test_summarize_episode_without_meta_has_none_fell():
     assert summary.fell is None
     assert summary.component_scores == {}
     assert summary.warnings == []
+
+
+def _creature_with_root(part_id: str = "a") -> CreatureSpec:
+    return CreatureSpec.model_validate(
+        {"name": "c", "parts": [{"id": part_id, "shape": "sphere", "radius": 0.1, "mass": 1.0}]}
+    )
+
+
+def test_summarize_episode_fell_ignores_zero_fall_penalty_when_creature_given():
+    """Regression: a task without reward.fall_penalty always scores the `fall`
+    component as 0, so the old score-based check always reported fell=False even
+    for a creature that visibly toppled. Passing `creature` switches to
+    orientation-based detection (see diagnosis.first_fall_time), which does not
+    depend on the reward weights at all."""
+    trace = EpisodeTrace.model_validate(
+        {
+            "run_id": "r3",
+            "creature_name": "c",
+            "task_name": "t",
+            "backend": "pybullet",
+            "score": 0.0,
+            "frames": [
+                {"t": 0.0, "parts": {"a": {"position": [0, 0, 0.2]}}, "score": 0.0},
+                {
+                    "t": 0.5,
+                    # Tipped: up_z = 1 - 2*(0.8^2) = 1 - 1.28 = -0.28 < 0.5 -> fallen.
+                    "parts": {"a": {"position": [0, 0, 0.05], "orientation": [0.6, 0.8, 0, 0]}},
+                    "score": 0.0,
+                },
+            ],
+            # No fall_penalty, so the score component is 0 - this is exactly what
+            # crawl_forward-style tasks look like.
+            "meta": {
+                "schema_version": "1",
+                "lab_version": "0.1.0",
+                "score_summary": {"forward": 0.0, "fall": 0.0, "total": 0.0},
+            },
+        }
+    )
+
+    without_creature = summarize_episode(trace)
+    assert without_creature.fell is False  # the pre-fix (weak) signal
+
+    with_creature = summarize_episode(trace, creature=_creature_with_root("a"))
+    assert with_creature.fell is True  # the real answer
+
+
+def test_summarize_episode_fell_false_when_creature_stays_upright():
+    summary = summarize_episode(_trace(), creature=_creature_with_root("a"))
+    assert summary.fell is False
+
+
+def test_summarize_episode_fell_detects_a_real_toppling_creature_on_crawl_forward():
+    """End-to-end version of the synthetic regression above: a tall, top-heavy
+    creature that topples under its own gait, on a real crawl_forward-style task
+    (no reward.fall_penalty) - the exact scenario `qualify`'s Robustness check and
+    the editor's robustness verdict depend on getting right."""
+    import pytest
+
+    pytest.importorskip("pybullet")
+    from creature_lab.cli import _simulate
+
+    creature = CreatureSpec.model_validate(
+        {
+            "name": "faller",
+            "parts": [
+                {"id": "torso", "shape": "box", "size": [0.1, 0.1, 0.6], "mass": 2.0},
+                {"id": "leg", "shape": "capsule", "length": 0.2, "radius": 0.03, "mass": 0.1},
+            ],
+            "joints": [
+                {
+                    "id": "hip",
+                    "parent": "torso",
+                    "child": "leg",
+                    "type": "hinge",
+                    "anchor": [0, 0, -0.3],
+                    "axis": [0, 1, 0],
+                    "limit": [-1.5, 1.5],
+                }
+            ],
+            "motors": [{"joint": "hip", "amplitude": 1.5, "frequency": 3.0}],
+        }
+    )
+    task = TaskSpec.model_validate(
+        {
+            "name": "crawl_forward",
+            "duration": 2.0,
+            "terrain": {"friction": 1.0},
+            "reward": {"forward_distance": 1.0},  # no fall_penalty
+        }
+    )
+    trace = _simulate(creature, task)
+
+    assert summarize_episode(trace, task).fell is False  # the pre-fix (weak) signal
+    assert summarize_episode(trace, task, creature).fell is True  # the real answer
 
 
 def test_duration_is_final_frame_timestamp_not_span():

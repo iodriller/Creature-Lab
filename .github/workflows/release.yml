@@ -1,0 +1,33 @@
+name: Build release artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.11
+      - run: uv sync --all-extras
+      - run: |
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run pytest
+          uv run creature-lab zoo check-showcases
+          uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: creature-lab-distributions
+          path: dist/*
+          if-no-files-found: error
+
+  # Publishing is intentionally not automatic. Download the verified artifacts,
+  # inspect them, then publish only after the PyPI trusted-publisher environment is
+  # configured and an explicit public-release decision has been made.

@@ -14,8 +14,8 @@ On Windows PowerShell:
 .\scripts\start.ps1
 ```
 
-The launcher installs the demo extras, runs `creature-lab doctor`, opens the browser viewer, and
-keeps the creature looping until `Ctrl+C`. Use `--once` when you want a one-pass smoke run.
+The launcher installs starter extras, runs `creature-lab doctor`, and opens the interactive build
+editor. Use `--mode demo` for looping read-only playback.
 
 ## Manual Path
 
@@ -35,6 +35,9 @@ Use the manual path when you want to control dependency extras or call the CLI d
 5. [Creature Spec](CREATURE_SPEC.md) and [Task Spec](TASK_SPEC.md) - JSON authoring.
 6. [Run Artifacts](RUN_ARTIFACTS.md) - saved traces, reports, and reproducibility.
 7. [Zoo](ZOO.md) - packaged creatures, tasks, baselines, benchmarks, and gallery.
-8. [Roadmap](ROADMAP.md) - project boundaries and future priorities.
+8. [Failure Lab](FAILURE_LAB.md) - three reproducible education exercises.
+9. [Grand Plan](GRAND_PLAN.md) - the single active roadmap: what Creature Lab is and where it's going.
+10. [Roadmap](ROADMAP.md) - the durable guard rails (points to the Grand Plan).
+11. [Releasing](RELEASING.md) - verified distributions, clean-install smoke, and publication gates.
 
 Historical plans and audits live in [archive](archive/).

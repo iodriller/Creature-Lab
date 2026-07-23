@@ -60,6 +60,11 @@ class RewardSpec(StrictModel):
     target_distance: float = 0.0
     energy_penalty: float = 0.0
     fall_penalty: float = 0.0
+    #: Positive reward for still being upright at the end of the episode - the
+    #: mirror image of ``fall_penalty``. Without this, a "stay balanced" task built
+    #: only from penalties (fall_penalty + energy_penalty) can never score above 0,
+    #: so even a creature that succeeds looks like it failed.
+    survival: float = 0.0
 
 
 class DamageEventSpec(StrictModel):

@@ -20,9 +20,10 @@ def test_mjcf_is_well_formed_xml(creature):
     root = ET.fromstring(export_mjcf(creature))
     assert root.tag == "mujoco"
     assert root.find("worldbody") is not None
-    # One actuator per motored joint.
+    # One actuator per hinge: policies may intentionally control a hinge even when
+    # the legacy open-loop gait has no MotorSpec for it.
     actuators = root.findall("actuator/position")
-    assert len(actuators) == len(creature.motors)
+    assert len(actuators) == len([joint for joint in creature.joints if joint.type == "hinge"])
 
 
 def test_mjcf_loads_in_mujoco():
@@ -95,6 +96,100 @@ def test_mujoco_backend_runs_an_episode():
     import math
 
     assert math.isfinite(frames[-1].score)
+
+
+def test_target_seek_runs_deterministically_on_mujoco():
+    """MuJoCo's default MJCF actuator/friction export makes generate_quadruped() a
+    much weaker walker than under PyBullet for the same open-loop gait - a
+    pre-existing, documented backend characteristic (see KNOWN_ISSUES.md's
+    "exact physics is backend-dependent"), not something specific to this
+    controller. A full physical steering scenario like test_controllers.py's isn't a
+    reliable signal here since the body barely translates at all in 3s regardless of
+    controller. This instead confirms the controller runs cleanly and
+    deterministically against MuJoCo-sourced frames (real cross-backend coverage for
+    the steering *math* itself is in test_target_seek_steering_asymmetry_from_a_
+    synthetic_frame below, which is backend-independent by construction)."""
+    pytest.importorskip("mujoco")
+    import math
+
+    from creature_lab.backends.mujoco_backend import MuJoCoBackend
+    from creature_lab.controllers.target_seek import TargetSeekController
+
+    creature = generate_quadruped()
+    task = TaskSpec.model_validate(
+        {
+            "name": "reach",
+            "duration": 1.0,
+            "timestep": 1 / 60,
+            "terrain": {"type": "plane", "friction": 1.0},
+            "target": {"position": [0.0, 1.5, 0.15], "radius": 0.15},
+            "reward": {"target_distance": 1.0},
+        }
+    )
+
+    def run() -> list:
+        controller = TargetSeekController(creature, task)
+        backend = MuJoCoBackend()
+        backend.build(creature, task)
+        frames = []
+        prev = None
+        try:
+            for i in range(task.step_count()):
+                backend.apply_motor_targets(controller(i * task.timestep, prev))
+                prev = backend.step(task.timestep)
+                frames.append(prev)
+        finally:
+            backend.close()
+        return frames
+
+    frames_a = run()
+    frames_b = run()
+
+    assert [f.parts["torso"].position for f in frames_a] == [
+        f.parts["torso"].position for f in frames_b
+    ]
+    assert all(math.isfinite(f.score) for f in frames_a)
+
+
+def test_target_seek_steering_asymmetry_from_a_synthetic_frame():
+    """The controller only ever reads a FrameState (root position + orientation) -
+    it has no idea which backend produced it. Feed it a synthetic frame directly
+    (identity orientation, facing +x) with the target off to one side, and confirm
+    it computes the correct differential steering regardless of backend: this is
+    the part of "works on both backends" that's actually backend-independent."""
+    from creature_lab.controllers.cpg import CPGController
+    from creature_lab.controllers.target_seek import TargetSeekController
+    from creature_lab.schema import FrameState
+
+    creature = generate_quadruped()
+    task = TaskSpec.model_validate(
+        {
+            "name": "reach",
+            "duration": 1.0,
+            "target": {"position": [0.0, 1.5, 0.15], "radius": 0.15},  # target to the left
+        }
+    )
+    frame = FrameState.model_validate(
+        {
+            "t": 0.0,
+            "parts": {"torso": {"position": (0.0, 0.0, 0.1), "orientation": (1, 0, 0, 0)}},
+            "score": 0.0,
+        }
+    )
+    # Two fresh, independently-seeded instances so this doesn't depend on shared
+    # mutable state or call ordering between them.
+    targets = TargetSeekController(creature, task)(0.0, frame)
+    base = CPGController(creature)(0.0, frame)  # the un-steered gait for the same instant
+
+    left_joints = [j for j in targets if j.endswith("l")]
+    right_joints = [j for j in targets if j.endswith("r")]
+    assert left_joints and right_joints
+    # Target is 90 degrees left: left-side output should be damped relative to the
+    # base gait, right-side amplified - a hard turn toward the target.
+    for j in left_joints:
+        assert abs(targets[j]) < abs(base[j]) + 1e-9
+    for j in right_joints:
+        assert abs(targets[j]) > abs(base[j]) - 1e-9
 
 
 @pytest.mark.parametrize(

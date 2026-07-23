@@ -8,6 +8,7 @@ the package, so ``creature-lab zoo run <name>`` works from an installed wheel.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,58 @@ ZOO_DIR = Path(__file__).parent / "zoo"
 
 #: Preferred default task names (first match wins) when a creature offers several.
 _PREFERRED_DEFAULTS = ("crawl_forward", "walk", "balance")
+_EXPLICIT_DEFAULT_TASKS = {
+    "humanoid_minimal": "balance",
+    "humanoid_12dof": "walk",
+}
+
+
+@dataclass(frozen=True)
+class ZooShowcase:
+    """Measured first-run contract, or an explicitly labeled challenge."""
+
+    task: str
+    status: str
+    min_score: float | None
+    require_no_fall: bool
+    description: str
+
+
+ZOO_SHOWCASES: dict[str, ZooShowcase] = {
+    "quadruped": ZooShowcase(
+        "crawl_forward", "showcase", 1.5, True, "Fast curated four-legged crawl"
+    ),
+    "hexapod": ZooShowcase(
+        "crawl_forward", "showcase", 1.2, True, "Stable coordinated six-legged crawl"
+    ),
+    "worm": ZooShowcase(
+        "crawl_forward",
+        "challenge",
+        None,
+        False,
+        "Fast body-wave motion that still exposes rollover instability",
+    ),
+    "damaged_quadruped": ZooShowcase(
+        "recover", "showcase", 1.5, True, "Keeps moving after a scripted failure"
+    ),
+    "humanoid_minimal": ZooShowcase(
+        "balance",
+        "challenge",
+        None,
+        False,
+        "Eight-DOF biped without feet; use it to diagnose structural instability",
+    ),
+    "humanoid_12dof": ZooShowcase(
+        "walk", "showcase", 0.3, True, "Measured two-foot humanoid walking gait"
+    ),
+    "tripod": ZooShowcase(
+        "crawl_forward",
+        "challenge",
+        None,
+        False,
+        "Intentionally difficult asymmetric locomotion challenge",
+    ),
+}
 
 
 def list_zoo_creatures() -> list[str]:
@@ -51,10 +104,19 @@ def default_task_name(name: str) -> str:
     tasks = zoo_tasks(name)
     if not tasks:
         raise KeyError(f"zoo creature {name!r} has no tasks")
+    explicit = _EXPLICIT_DEFAULT_TASKS.get(name)
+    if explicit in tasks:
+        return explicit
     for preferred in _PREFERRED_DEFAULTS:
         if preferred in tasks:
             return preferred
     return tasks[0]
+
+
+def zoo_showcase(name: str) -> ZooShowcase | None:
+    """Return the first-run behavioral contract for a Zoo entry, if declared."""
+    _creature_dir(name)
+    return ZOO_SHOWCASES.get(name)
 
 
 def zoo_creature(name: str, task: str | None = None) -> tuple[CreatureSpec, TaskSpec]:
@@ -68,6 +130,16 @@ def zoo_creature(name: str, task: str | None = None) -> tuple[CreatureSpec, Task
         raise KeyError(f"unknown task {task_name!r} for {name!r}; choose one of: {available}")
     task_spec = TaskSpec.model_validate_json(task_path.read_text())
     return creature, task_spec
+
+
+def zoo_optimized_controller(name: str) -> Path | None:
+    """Path to a packaged, CMA-ES-optimized ``controller.json`` for this zoo creature
+    (see ``creature-lab optimize``), if one is shipped - ``None`` otherwise. The
+    creature's own ``creature.json`` motors are left at their original, un-tuned
+    values; this is an opt-in, additive artifact so baselines stay unaffected.
+    """
+    path = _creature_dir(name) / "controller.json"
+    return path if path.exists() else None
 
 
 def zoo_baseline(name: str, task: str, backend: str = "pybullet") -> dict[str, Any] | None:

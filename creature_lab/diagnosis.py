@@ -27,6 +27,7 @@ _EARLY_FALL_FRACTION = 0.3
 _DOMINANT_CONTACT = 0.8
 _MINOR_CONTACT = 0.2
 _COM_HEIGHT_STD = 0.1
+_TARGET_NO_PROGRESS = 0.05  # metres of net closing distance below which "no progress"
 # Humanoid-specific thresholds.
 _ASYM_RATIO = 2.0
 _KNEE_LIMIT_EPS = 0.05  # rad from a limit counts as "at the limit"
@@ -65,14 +66,41 @@ class _Signals:
     early_contact: bool
     contact_fraction: dict[str, float]  # part id -> fraction of frames in contact
     motors_over_limit: list[str]
+    #: (initial distance to task.target - final distance), horizontal only. None
+    #: when the task has no target.
+    target_progress: float | None = None
 
 
-def _root_id(creature: CreatureSpec) -> str:
+def root_id(creature: CreatureSpec) -> str:
+    """The creature's root part: the one with no parent joint."""
     child_ids = {joint.child for joint in creature.joints}
     return next(part.id for part in creature.parts if part.id not in child_ids)
 
 
-def _signals(trace: EpisodeTrace, creature: CreatureSpec) -> _Signals:
+def is_upright(orientation: tuple[float, float, float, float]) -> bool:
+    """Whether a (w, x, y, z) quaternion's local +z axis still points mostly up."""
+    _, x, y, _ = orientation
+    up_z = 1 - 2 * (x * x + y * y)
+    return up_z >= _UPRIGHT_Z
+
+
+def first_fall_time(trace: EpisodeTrace, creature: CreatureSpec) -> float | None:
+    """First frame time the root part toppled (see ``is_upright``), or None if it never did.
+
+    Reward-independent, unlike a score's ``fall`` component (which is only nonzero
+    when the task sets ``reward.fall_penalty`` - see ``creature_lab.diagnostics.
+    summarize_episode``, which uses this for the same reason). Root-orientation-based
+    fall detection, matching the check ``_signals`` uses internally.
+    """
+    root = root_id(creature)
+    for frame in trace.frames:
+        pose = frame.parts.get(root)
+        if pose is not None and not is_upright(pose.orientation):
+            return frame.t
+    return None
+
+
+def _signals(trace: EpisodeTrace, creature: CreatureSpec, task: TaskSpec | None = None) -> _Signals:
     frames = trace.frames
     masses = {part.id: part.mass for part in creature.parts}
 
@@ -88,22 +116,26 @@ def _signals(trace: EpisodeTrace, creature: CreatureSpec) -> _Signals:
     # distance would be dominated by that one-time vertical drop, not locomotion.
     net = math.hypot(forward, last[1] - first[1])
 
+    target_progress: float | None = None
+    if task is not None and task.target is not None:
+        tx, ty, _tz = task.target.position
+        initial_distance = math.hypot(tx - first[0], ty - first[1])
+        final_distance = math.hypot(tx - last[0], ty - last[1])
+        target_progress = initial_distance - final_distance
+
     # CoM height stability is measured only after the settling transient (the drop
     # from the spawn height), so a clean walker is not flagged for its initial fall.
     settle_t = min(0.5, 0.2 * frames[-1].t)
 
-    root_id = _root_id(creature)
+    root_part_id = root_id(creature)
     steady_heights: list[float] = []
     fall_time: float | None = None
     for frame in frames:
         if frame.t >= settle_t:
             steady_heights.append(com(frame)[2])
-        pose = frame.parts.get(root_id)
-        if pose is not None and fall_time is None:
-            _, x, y, _ = pose.orientation
-            up_z = 1 - 2 * (x * x + y * y)
-            if up_z < _UPRIGHT_Z:
-                fall_time = frame.t
+        pose = frame.parts.get(root_part_id)
+        if pose is not None and fall_time is None and not is_upright(pose.orientation):
+            fall_time = frame.t
     com_height_std = statistics.pstdev(steady_heights) if len(steady_heights) > 1 else 0.0
 
     contacts: Counter[str] = Counter()
@@ -142,6 +174,7 @@ def _signals(trace: EpisodeTrace, creature: CreatureSpec) -> _Signals:
         early_contact=early_contact,
         contact_fraction=contact_fraction,
         motors_over_limit=motors_over_limit,
+        target_progress=target_progress,
     )
 
 
@@ -160,7 +193,7 @@ def diagnose(
     trace: EpisodeTrace, creature: CreatureSpec, task: TaskSpec | None = None
 ) -> DiagnosisResult:
     """Diagnose an episode and return matched failure patterns with suggested fixes."""
-    sig = _signals(trace, creature)
+    sig = _signals(trace, creature, task)
     result = DiagnosisResult(
         metrics={
             "forward_displacement": sig.forward,
@@ -172,6 +205,7 @@ def diagnose(
             "contact_frames_fraction": (
                 sig.frames_with_contact / sig.frame_count if sig.frame_count else 0.0
             ),
+            **({"target_progress": sig.target_progress} if sig.target_progress is not None else {}),
         }
     )
 
@@ -235,7 +269,7 @@ def diagnose(
 
     # 7. One limb does all the ground work.
     legs_in_contact = {
-        pid: frac for pid, frac in sig.contact_fraction.items() if pid != _root_id(creature)
+        pid: frac for pid, frac in sig.contact_fraction.items() if pid != root_id(creature)
     }
     if len(legs_in_contact) >= 2:
         dominant = max(legs_in_contact, key=legs_in_contact.get)
@@ -255,6 +289,16 @@ def diagnose(
             f"The centre-of-mass height swings a lot (std={sig.com_height_std:.2f} m) - "
             "the body bounces or pitches rather than gliding.",
             "Reduce motor amplitude/frequency or add a stabilising contact point.",
+        )
+
+    # 9. Has a target, but made no real progress toward it.
+    if sig.target_progress is not None and sig.target_progress < _TARGET_NO_PROGRESS:
+        result.add(
+            "target_not_approached",
+            f"The task has a target, but the creature made almost no progress toward "
+            f"it ({sig.target_progress:+.2f} m closed over the episode).",
+            "Use a target-aware controller (e.g. --controller target_seek) instead of "
+            "an open-loop gait, or check the episode is long enough to reach it.",
         )
 
     _add_humanoid_patterns(result, trace, creature, sig)

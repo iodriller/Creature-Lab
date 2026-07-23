@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections import defaultdict, deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ValidationError
 
+from creature_lab.controllers.target_seek import can_steer as _target_seek_can_steer
 from creature_lab.editor import presets
+from creature_lab.editor.history import EditorHistory
+from creature_lab.editor.labels import friendly_label, hierarchy_markdown
+from creature_lab.io_utils import atomic_write_text
 from creature_lab.scaffold import mirror_limb
 from creature_lab.schema import CreatureSpec, FrameState, PartSpec, TaskSpec
 from creature_lab.schema.creature import MotorType, ShapeType
@@ -45,6 +51,38 @@ def _part_extent_z(part: PartSpec) -> float:
     if part.length is not None:
         return part.length / 2
     return 0.05
+
+
+def _file_fingerprint(path: Path) -> tuple[int, int, str] | None:
+    """Content-sensitive identity, including deletion as ``None``."""
+    if not path.is_file():
+        return None
+    data = path.read_bytes()
+    stat = path.stat()
+    return stat.st_mtime_ns, len(data), hashlib.sha256(data).hexdigest()
+
+
+def _quat_multiply(
+    left: tuple[float, float, float, float], right: tuple[float, float, float, float]
+) -> tuple[float, float, float, float]:
+    lw, lx, ly, lz = left
+    rw, rx, ry, rz = right
+    return (
+        lw * rw - lx * rx - ly * ry - lz * rz,
+        lw * rx + lx * rw + ly * rz - lz * ry,
+        lw * ry - lx * rz + ly * rw + lz * rx,
+        lw * rz + lx * ry - ly * rx + lz * rw,
+    )
+
+
+def _rotate_vector(
+    orientation: tuple[float, float, float, float],
+    vector: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    pure = (0.0, *vector)
+    w, x, y, z = orientation
+    rotated = _quat_multiply(_quat_multiply(orientation, pure), (w, -x, -y, -z))
+    return rotated[1], rotated[2], rotated[3]
 
 
 def _load_creature_from_path(path: Path) -> tuple[CreatureSpec, list[str]]:
@@ -90,6 +128,18 @@ def _write_creature_to_path(creature: CreatureSpec, path: Path) -> None:
         path.write_text(creature.model_dump_json(indent=2, exclude_none=True))
 
 
+#: Controllers Simulate can run, in display order. Kept in sync with
+#: ``cli._make_controller`` by hand (session.py can't import cli.py - that would
+#: pull physics/backend machinery into the pure editor layer).
+AVAILABLE_CONTROLLERS: tuple[str, ...] = (
+    "curated",
+    "sinusoid",
+    "cpg",
+    "target_seek",
+    "posture",
+)
+
+
 class EditorSession:
     """Editor state that can be unit-tested without Viser or physics imports."""
 
@@ -119,9 +169,17 @@ class EditorSession:
         self.selected_motor_id = self.creature.motors[0].joint if self.creature.motors else ""
         self.last_message = "Ready."
         self.project_dir: Path | None = None
-        self._creature_mtime: float | None = None
-        self._task_mtime: float | None = None
+        self._creature_fingerprint: tuple[int, int, str] | None = None
+        self._task_fingerprint: tuple[int, int, str] | None = None
         self.external_change_pending = False
+        #: UI complexity level. "basic" hides advanced controls; "advanced" shows everything.
+        self.mode: Literal["basic", "advanced"] = "basic"
+        #: Which controller Simulate uses; see AVAILABLE_CONTROLLERS. Not undoable
+        #: (like mode) - it's a run setting, not part of the saved design.
+        self.controller: str = "curated"
+        self._history = EditorHistory()
+        #: True when there are edits not yet written to ``out_path``/the bound project.
+        self._dirty = False
         if project_dir is not None:
             self.bind_project(project_dir)
 
@@ -138,6 +196,143 @@ class EditorSession:
         session.last_message = _load_message(path, warnings)
         return session
 
+    # -- history / snapshots / dirty state --------------------------------------
+
+    def _snapshot(self) -> dict[str, Any]:
+        """Capture the full editable document state as an inert, serialisable dict."""
+        return {
+            "creature": _model_data(self.creature),
+            "task": _model_data(self.task),
+            "template": self.template,
+            "params": dict(self.params),
+            "task_preset": self.task_preset,
+            "selected_part_id": self.selected_part_id,
+            "selected_motor_id": self.selected_motor_id,
+        }
+
+    def _restore(self, snap: dict[str, Any]) -> None:
+        self.creature = CreatureSpec.model_validate(snap["creature"])
+        self.task = TaskSpec.model_validate(snap["task"])
+        self.template = snap["template"]
+        self.params = dict(snap["params"])
+        self.task_preset = snap["task_preset"]
+        self.selected_part_id = snap["selected_part_id"]
+        self.selected_motor_id = snap["selected_motor_id"]
+
+    def _checkpoint(self) -> None:
+        """Record the current state so the change about to happen can be undone.
+
+        Called at the point of commit inside each mutating method (after any early
+        ``return`` guards), so history only grows when the document actually changes.
+        Selection changes deliberately do not checkpoint — undoing a click is annoying.
+        """
+        self._history.push(self._snapshot())
+        self._dirty = True
+
+    @property
+    def can_undo(self) -> bool:
+        return self._history.can_undo
+
+    @property
+    def can_redo(self) -> bool:
+        return self._history.can_redo
+
+    @property
+    def is_dirty(self) -> bool:
+        return self._dirty
+
+    def undo(self) -> bool:
+        snap = self._history.undo(self._snapshot())
+        if snap is None:
+            self.last_message = "Nothing to undo."
+            return False
+        self._restore(snap)
+        self._dirty = True
+        self.last_message = "Undid last change."
+        return True
+
+    def redo(self) -> bool:
+        snap = self._history.redo(self._snapshot())
+        if snap is None:
+            self.last_message = "Nothing to redo."
+            return False
+        self._restore(snap)
+        self._dirty = True
+        self.last_message = "Redid change."
+        return True
+
+    def save_snapshot(self, name: str) -> None:
+        """Store the current design under a name so it can be restored later."""
+        clean = name.strip()
+        if not clean:
+            self.last_message = "Give the snapshot a name first."
+            return
+        self._history.save_named(clean, self._snapshot())
+        self.last_message = f"Saved snapshot {clean!r}"
+
+    def restore_snapshot(self, name: str) -> bool:
+        snap = self._history.get_named(name)
+        if snap is None:
+            self.last_message = f"No snapshot named {name!r}"
+            return False
+        self._checkpoint()
+        self._restore(snap)
+        self.last_message = f"Restored snapshot {name!r}"
+        return True
+
+    def snapshot_names(self) -> list[str]:
+        return self._history.named_names()
+
+    def set_mode(self, mode: str) -> None:
+        if mode not in ("basic", "advanced"):
+            self.last_message = f"Unknown mode {mode!r}"
+            return
+        self.mode = mode  # type: ignore[assignment]
+        self.last_message = f"{mode.capitalize()} mode"
+
+    def set_controller(self, name: str) -> None:
+        if name not in AVAILABLE_CONTROLLERS:
+            self.last_message = f"Unknown controller {name!r}"
+            return
+        self.controller = name
+        self.last_message = f"Controller set to {name}"
+
+    def reset_to_template(self) -> None:
+        """Regenerate the creature from its template defaults (undoable)."""
+        if self.template == "custom":
+            self.last_message = "Loaded JSON has no template to reset to."
+            return
+        self._checkpoint()
+        self.params = presets.default_params(self.template)
+        self.creature = presets.generate_creature(self.template, self.params)
+        self.selected_part_id = self.creature.parts[0].id
+        self.selected_motor_id = self.creature.motors[0].joint if self.creature.motors else ""
+        self.last_message = f"Reset to {presets.preset_label(self.template)} defaults"
+
+    def describe_delete_impact(self) -> list[str]:
+        """Part ids that :meth:`delete_selected_part` would remove.
+
+        Empty means the selected part is a root and cannot be deleted. Otherwise the
+        list is the part plus every descendant, so the UI can warn about child parts
+        before doing something irreversible.
+        """
+        part_id = self.selected_part_id
+        roots = set(self.part_ids()) - {joint.child for joint in self.creature.joints}
+        if part_id in roots:
+            return []
+        children = defaultdict(list)
+        for joint in self.creature.joints:
+            children[joint.parent].append(joint.child)
+        remove = {part_id}
+        queue: deque[str] = deque([part_id])
+        while queue:
+            current = queue.popleft()
+            for child in children[current]:
+                if child not in remove:
+                    remove.add(child)
+                    queue.append(child)
+        return sorted(remove)
+
     def load_path(self, path: Path) -> None:
         creature, warnings = _load_creature_from_path(path)
         self.template = "custom"
@@ -146,9 +341,12 @@ class EditorSession:
         self.source_path = path
         self.selected_part_id = self.creature.parts[0].id
         self.selected_motor_id = self.creature.motors[0].joint if self.creature.motors else ""
+        self._history.clear()
+        self._dirty = False
         self.last_message = _load_message(path, warnings)
 
     def apply_template(self, template: str) -> None:
+        self._checkpoint()
         self.template = template
         self.params = presets.default_params(template)
         self.creature = presets.generate_creature(template, self.params)
@@ -156,10 +354,29 @@ class EditorSession:
         self.selected_motor_id = self.creature.motors[0].joint if self.creature.motors else ""
         self.last_message = f"Started from {presets.preset_label(template)}"
 
+    def apply_onboarding(self, creature_name: str, goal_key: str) -> None:
+        """First-run choice: creature template x goal, in one undo step.
+
+        Equivalent to ``apply_template`` + ``set_task_preset`` but atomic, so a single
+        Undo after onboarding reverts to whatever was there before (nothing, on a
+        fresh session).
+        """
+        self._checkpoint()
+        self.template = creature_name
+        self.params = presets.default_params(creature_name)
+        self.creature = presets.generate_creature(creature_name, self.params)
+        self.selected_part_id = self.creature.parts[0].id
+        self.selected_motor_id = self.creature.motors[0].joint if self.creature.motors else ""
+        goal_label, task_name = presets.ONBOARDING_GOALS.get(goal_key, (goal_key, "crawl_forward"))
+        self.task_preset = task_name
+        self.task = presets.generate_task(task_name)
+        self.last_message = f"Started {presets.preset_label(creature_name)} · {goal_label}"
+
     def set_body_param(self, key: str, value: float) -> None:
         if self.template == "custom":
             self.last_message = "Loaded JSON is custom; use part and motor controls to edit it."
             return
+        self._checkpoint()
         self.params[key] = value
         previous_part = self.selected_part_id
         previous_motor = self.selected_motor_id
@@ -175,27 +392,53 @@ class EditorSession:
         self.last_message = f"Updated {key}"
 
     def set_name(self, name: str) -> None:
+        self._checkpoint()
         data = _model_data(self.creature)
         data["name"] = name.strip() or self.creature.name
         self.creature = CreatureSpec.model_validate(data)
         self.last_message = f"Renamed to {self.creature.name}"
 
     def set_task_preset(self, name: str) -> None:
+        self._checkpoint()
         self.task_preset = name
         self.task = presets.generate_task(name)
         self.last_message = f"Task set to {name}"
 
     def set_task_duration(self, duration: float) -> None:
-        self.task = presets.generate_task(
-            self.task_preset, duration=duration, friction=self.task.terrain.friction
-        )
+        self._checkpoint()
+        data = _model_data(self.task)
+        data["duration"] = duration
+        self.task = TaskSpec.model_validate(data)
         self.last_message = f"Task duration set to {duration:.1f}s"
 
     def set_task_friction(self, friction: float) -> None:
-        self.task = presets.generate_task(
-            self.task_preset, duration=self.task.duration, friction=friction
-        )
+        self._checkpoint()
+        data = _model_data(self.task)
+        data["terrain"]["friction"] = friction
+        self.task = TaskSpec.model_validate(data)
         self.last_message = f"Terrain friction set to {friction:.2f}"
+
+    def set_target_position(self, position: tuple[float, float, float]) -> None:
+        if self.task.target is None:
+            self.last_message = "This task has no target to move."
+            return
+        self._checkpoint()
+        data = _model_data(self.task)
+        data["target"]["position"] = list(position)
+        self.task = TaskSpec.model_validate(data)
+        self.last_message = (
+            f"Target moved to ({position[0]:.2f}, {position[1]:.2f}, {position[2]:.2f})"
+        )
+
+    def set_target_radius(self, radius: float) -> None:
+        if self.task.target is None:
+            self.last_message = "This task has no target to resize."
+            return
+        self._checkpoint()
+        data = _model_data(self.task)
+        data["target"]["radius"] = radius
+        self.task = TaskSpec.model_validate(data)
+        self.last_message = f"Target radius set to {radius:.2f} m"
 
     def part_ids(self) -> list[str]:
         return [part.id for part in self.creature.parts]
@@ -236,6 +479,7 @@ class EditorSession:
         size: tuple[float, float, float] | None = None,
         color: tuple[int, int, int] | None = None,
     ) -> None:
+        self._checkpoint()
         part_id = self.selected_part_id
         data = _model_data(self.creature)
         for part in data["parts"]:
@@ -276,10 +520,13 @@ class EditorSession:
         amplitude: float | None = None,
         frequency: float | None = None,
         phase: float | None = None,
+        offset: float | None = None,
+        max_force: float | None = None,
     ) -> None:
         joint_id = self.selected_motor()
         if not joint_id:
             return
+        self._checkpoint()
         data = _model_data(self.creature)
         for motor in data["motors"]:
             if motor["joint"] == joint_id:
@@ -289,6 +536,10 @@ class EditorSession:
                     motor["frequency"] = max(0.0, frequency)
                 if phase is not None:
                     motor["phase"] = phase
+                if offset is not None:
+                    motor["offset"] = offset
+                if max_force is not None:
+                    motor["max_force"] = max(0.001, max_force)
                 break
         self.creature = CreatureSpec.model_validate(data)
         self.last_message = f"Updated motor {joint_id}"
@@ -300,13 +551,16 @@ class EditorSession:
         if joint is None:
             self.last_message = "Root part has no parent joint anchor to move."
             return
+        self._checkpoint()
         frame = self.preview_frame()
         parent_pose = frame.parts[joint.parent]
-        anchor = [
+        delta = (
             world_position[0] - parent_pose.position[0],
             world_position[1] - parent_pose.position[1],
             world_position[2] - parent_pose.position[2],
-        ]
+        )
+        w, x, y, z = parent_pose.orientation
+        anchor = _rotate_vector((w, -x, -y, -z), delta)
         data = _model_data(self.creature)
         for joint_data in data["joints"]:
             if joint_data["id"] == joint.id:
@@ -333,12 +587,58 @@ class EditorSession:
                 motor["phase"] = -1.2 * index
         else:
             return
+        self._checkpoint()
         self.creature = CreatureSpec.model_validate(data)
         if self.creature.motors:
             self.selected_motor_id = self.creature.motors[0].joint
         self.last_message = f"Applied {gait} gait"
 
+    def scale_all_motors(
+        self, *, amplitude_factor: float = 1.0, frequency_factor: float = 1.0
+    ) -> bool:
+        """Scale every motor's amplitude/frequency by a bounded factor (undoable).
+
+        A general-purpose, safe building block for diagnosis fixes: e.g. reducing
+        amplitude tends to calm oscillation/saturation without needing to know which
+        specific joint is at fault.
+        """
+        if not self.creature.motors:
+            self.last_message = "No motors to scale."
+            return False
+        self._checkpoint()
+        data = _model_data(self.creature)
+        for motor in data.get("motors", []):
+            motor["amplitude"] = max(0.0, motor["amplitude"] * amplitude_factor)
+            motor["frequency"] = max(0.0, motor["frequency"] * frequency_factor)
+        self.creature = CreatureSpec.model_validate(data)
+        self.last_message = "Scaled motor amplitude/frequency."
+        return True
+
+    def reverse_gait(self) -> bool:
+        """Shift every motor's phase by pi, inverting the gait's net thrust direction."""
+        if not self.creature.motors:
+            self.last_message = "No motors to reverse."
+            return False
+        self._checkpoint()
+        data = _model_data(self.creature)
+        for motor in data.get("motors", []):
+            motor["phase"] = motor["phase"] + math.pi
+        self.creature = CreatureSpec.model_validate(data)
+        self.last_message = "Reversed gait direction."
+        return True
+
+    def widen_stance(self, factor: float = 1.15) -> bool:
+        """Widen the body via its template's ``body_width`` param, if it has one."""
+        if self.template == "custom" or "body_width" not in self.params:
+            self.last_message = "No stance parameter available for this template."
+            return False
+        current = self.params["body_width"]
+        self.set_body_param("body_width", current * factor)
+        self.last_message = f"Widened stance to {current * factor:.3f} m"
+        return True
+
     def add_limb(self) -> None:
+        self._checkpoint()
         parent = self.selected_part_id
         data = _model_data(self.creature)
         index = 1
@@ -389,6 +689,7 @@ class EditorSession:
             self.last_message = "Root part cannot be deleted."
             return
 
+        self._checkpoint()
         children = defaultdict(list)
         for joint in self.creature.joints:
             children[joint.parent].append(joint.child)
@@ -418,6 +719,7 @@ class EditorSession:
         self.last_message = f"Deleted {', '.join(sorted(remove))}"
 
     def mirror(self, side: str) -> None:
+        self._checkpoint()
         self.creature = mirror_limb(self.creature, side=side)
         self.selected_part_id = self.creature.parts[0].id
         self.selected_motor_id = self.creature.motors[0].joint if self.creature.motors else ""
@@ -439,14 +741,65 @@ class EditorSession:
                 warnings.extend(validate_episode_inputs(self.creature, self.task))
             except EpisodeInputError as exc:
                 errors.append(str(exc))
+        if not errors:
+            errors.extend(self._controller_errors())
+            warnings.extend(self._controller_warnings())
         return SessionStatus(ok=not errors, errors=errors, warnings=warnings)
+
+    def _controller_errors(self) -> list[str]:
+        """Blocking controller/task mismatches - checked before Simulate is enabled.
+
+        Caught here (rather than only surfacing after a failed simulate job) so the
+        editor shows *why* Simulate is disabled instead of a blank "Failed: " message
+        - `_make_controller` (cli.py) raises a `typer.Exit` for this same case, which
+        carries no message and is fine for the CLI (the message is printed before the
+        raise) but reaches the editor's job status as an empty string.
+        """
+        if self.controller == "target_seek" and self.task.target is None:
+            return [
+                "Controller 'target_seek' needs a task with a target "
+                "(pick the reach_target task preset, or add one)."
+            ]
+        return []
+
+    def _controller_warnings(self) -> list[str]:
+        """Non-blocking controller/creature mismatches - Simulate still works."""
+        if self.controller == "target_seek" and not _target_seek_can_steer(self.creature):
+            return [
+                "No motored joint ends in 'l'/'r', so 'target_seek' can't steer this "
+                "creature - it will walk straight (the base gait) instead."
+            ]
+        if self.controller == "posture":
+            return [
+                "Controller 'posture' balances in place (PD correction on forward/backward "
+                "lean only) - it does not walk toward a forward or target objective, and "
+                "cannot correct sideways tipping (no creature here has a roll-actuating joint)."
+            ]
+        return []
 
     def save(self, path: Path | None = None) -> Path:
         target = path or self.out_path
         _write_creature_to_path(self.creature, target)
         self.out_path = target
+        self._dirty = False
         self.last_message = f"Saved {target}"
         return target
+
+    def restore_from_run(self, creature_path: Path, task_path: Path | None) -> None:
+        """Load a creature (+ optional task) from a saved run directory (undoable).
+
+        Used by the editor's run history to bring a past design back into the
+        current session without losing the ability to undo back to what was there.
+        """
+        self._checkpoint()
+        self.creature = CreatureSpec.model_validate(json.loads(creature_path.read_text()))
+        if task_path is not None and task_path.exists():
+            self.task = TaskSpec.model_validate(json.loads(task_path.read_text()))
+        self.template = "custom"
+        self.params = {}
+        self.selected_part_id = self.creature.parts[0].id
+        self.selected_motor_id = self.creature.motors[0].joint if self.creature.motors else ""
+        self.last_message = f"Restored design from {creature_path.parent.name}"
 
     @property
     def creature_file(self) -> Path | None:
@@ -465,32 +818,45 @@ class EditorSession:
         """
         project_dir = Path(project_dir)
         project_dir.mkdir(parents=True, exist_ok=True)
-        self.project_dir = project_dir
         creature_path = project_dir / "creature.json"
         task_path = project_dir / "task.json"
+        loaded_creature = self.creature
+        loaded_task = self.task
         if creature_path.exists():
-            self.creature = CreatureSpec.model_validate(json.loads(creature_path.read_text()))
+            loaded_creature = CreatureSpec.model_validate(
+                json.loads(creature_path.read_text(encoding="utf-8"))
+            )
+        if task_path.exists():
+            loaded_task = TaskSpec.model_validate(json.loads(task_path.read_text(encoding="utf-8")))
+        # Only mutate the in-memory document after both artifacts validate.
+        self.project_dir = project_dir
+        if creature_path.exists():
+            self.creature = loaded_creature
             self.template = "custom"
             self.params = {}
-        if task_path.exists():
-            self.task = TaskSpec.model_validate(json.loads(task_path.read_text()))
+        self.task = loaded_task
         self.out_path = creature_path
         self.source_path = creature_path if creature_path.exists() else None
         self.selected_part_id = self.creature.parts[0].id
         self.selected_motor_id = self.creature.motors[0].joint if self.creature.motors else ""
         self._write_project_files()
         self.external_change_pending = False
+        self._history.clear()
+        self._dirty = False
         self.last_message = f"Bound to project {project_dir}"
 
     def _write_project_files(self) -> None:
         if self.project_dir is None:
             return
         creature_path, task_path = self.creature_file, self.task_file
-        assert creature_path is not None and task_path is not None
-        creature_path.write_text(self.creature.model_dump_json(indent=2, exclude_none=True))
-        task_path.write_text(self.task.model_dump_json(indent=2, exclude_none=True))
-        self._creature_mtime = creature_path.stat().st_mtime
-        self._task_mtime = task_path.stat().st_mtime
+        if creature_path is None or task_path is None:
+            raise RuntimeError("project paths are unavailable")
+        atomic_write_text(creature_path, self.creature.model_dump_json(indent=2, exclude_none=True))
+        atomic_write_text(task_path, self.task.model_dump_json(indent=2, exclude_none=True))
+        self._creature_fingerprint = _file_fingerprint(creature_path)
+        self._task_fingerprint = _file_fingerprint(task_path)
+        self._dirty = False
+        self.external_change_pending = False
 
     def autosave(self) -> None:
         """Write the current creature/task to the bound project files, if any.
@@ -499,7 +865,21 @@ class EditorSession:
         every edit (see ``BuildControls._safe``) without changing behaviour for the
         plain Open/Save JSON workflow.
         """
+        if self.project_dir is None or not self._dirty:
+            return
+        if self.external_change_pending:
+            raise RuntimeError(
+                "project files changed on disk; reload them or explicitly overwrite the project"
+            )
         self._write_project_files()
+
+    def overwrite_project(self) -> None:
+        """Explicitly resolve an external-edit conflict in favor of editor state."""
+        if self.project_dir is None:
+            self.last_message = "No project bound; nothing to overwrite."
+            return
+        self._write_project_files()
+        self.last_message = "Overwrote project files with the editor version."
 
     def poll_external_changes(self) -> bool:
         """Edge-triggered: True the moment a bound project file changes on disk.
@@ -510,11 +890,10 @@ class EditorSession:
         if self.project_dir is None or self.external_change_pending:
             return False
         creature_path, task_path = self.creature_file, self.task_file
-        assert creature_path is not None and task_path is not None
-        creature_changed = (
-            creature_path.exists() and creature_path.stat().st_mtime != self._creature_mtime
-        )
-        task_changed = task_path.exists() and task_path.stat().st_mtime != self._task_mtime
+        if creature_path is None or task_path is None:
+            raise RuntimeError("project paths are unavailable")
+        creature_changed = _file_fingerprint(creature_path) != self._creature_fingerprint
+        task_changed = _file_fingerprint(task_path) != self._task_fingerprint
         changed = creature_changed or task_changed
         if changed:
             self.external_change_pending = True
@@ -526,18 +905,27 @@ class EditorSession:
             self.last_message = "No project bound; nothing to reload."
             return
         creature_path, task_path = self.creature_file, self.task_file
-        assert creature_path is not None and task_path is not None
-        if creature_path.exists():
-            self.creature = CreatureSpec.model_validate(json.loads(creature_path.read_text()))
-            self.template = "custom"
-            self.params = {}
-        if task_path.exists():
-            self.task = TaskSpec.model_validate(json.loads(task_path.read_text()))
+        if creature_path is None or task_path is None:
+            raise RuntimeError("project paths are unavailable")
+        if not creature_path.is_file() or not task_path.is_file():
+            missing = [path.name for path in (creature_path, task_path) if not path.is_file()]
+            raise FileNotFoundError(f"project artifact deleted: {', '.join(missing)}")
+        loaded_creature = CreatureSpec.model_validate(
+            json.loads(creature_path.read_text(encoding="utf-8"))
+        )
+        loaded_task = TaskSpec.model_validate(json.loads(task_path.read_text(encoding="utf-8")))
+        # Transactional reload: neither artifact is applied unless both validate.
+        self.creature = loaded_creature
+        self.task = loaded_task
+        self.template = "custom"
+        self.params = {}
         self.selected_part_id = self.creature.parts[0].id
         self.selected_motor_id = self.creature.motors[0].joint if self.creature.motors else ""
-        self._creature_mtime = creature_path.stat().st_mtime if creature_path.exists() else None
-        self._task_mtime = task_path.stat().st_mtime if task_path.exists() else None
+        self._creature_fingerprint = _file_fingerprint(creature_path)
+        self._task_fingerprint = _file_fingerprint(task_path)
         self.external_change_pending = False
+        self._history.clear()
+        self._dirty = False
         self.last_message = "Reloaded from disk."
 
     def preview_frame(self) -> FrameState:
@@ -559,17 +947,14 @@ class EditorSession:
             parent_position = positions[parent]
             for child in children[parent]:
                 joint = child_to_joint[child]
-                child_part = parts_by_id[child]
                 anchor = joint.anchor
-                z_offset = 0.0
-                if child_part.shape in {ShapeType.CAPSULE, ShapeType.CYLINDER} and anchor[2] < 0:
-                    z_offset = -_part_extent_z(child_part)
+                world_anchor = _rotate_vector(orientations[parent], anchor)
                 positions[child] = (
-                    parent_position[0] + anchor[0],
-                    parent_position[1] + anchor[1],
-                    max(0.02, parent_position[2] + anchor[2] + z_offset),
+                    parent_position[0] + world_anchor[0],
+                    parent_position[1] + world_anchor[1],
+                    parent_position[2] + world_anchor[2],
                 )
-                orientations[child] = joint.rest_orientation
+                orientations[child] = _quat_multiply(orientations[parent], joint.rest_orientation)
                 queue.append(child)
 
         return FrameState.model_validate(
@@ -608,3 +993,118 @@ class EditorSession:
             "joints": float(len(self.creature.joints)),
             "motors": float(len(self.creature.motors)),
         }
+
+    # -- human-readable labels ---------------------------------------------------
+
+    def part_label(self, part_id: str) -> str:
+        return friendly_label(part_id)
+
+    def part_hierarchy_markdown(self) -> str:
+        return hierarchy_markdown(self.creature, self.selected_part_id)
+
+    # -- diagnosis fixes -----------------------------------------------------------
+
+    def diagnosis_fix_label(self, pattern: str) -> str | None:
+        """Human label for the bounded fix ``apply_diagnosis_fix`` would apply, if any."""
+        entry = DIAGNOSIS_FIXES.get(pattern)
+        return entry[0] if entry else None
+
+    def diagnosis_severity(self, pattern: str) -> str:
+        return DIAGNOSIS_SEVERITY.get(pattern, "warning")
+
+    def apply_diagnosis_fix(self, pattern: str) -> bool:
+        """Apply the bounded, deterministic fix for a diagnosis pattern, if one exists.
+
+        Not every pattern has a safe generic fix (e.g. ``no_ground_contact`` needs
+        geometry knowledge this can't guess) - those return False and leave a message
+        explaining there's nothing automatic to apply.
+        """
+        entry = DIAGNOSIS_FIXES.get(pattern)
+        if entry is None:
+            self.last_message = f"No automatic fix available for {pattern!r}."
+            return False
+        _label, fix = entry
+        return fix(self)
+
+
+# -- diagnosis pattern -> bounded fix -------------------------------------------
+#
+# Deliberately conservative: only patterns with a safe, generic, undoable edit get
+# an entry. The rest (e.g. ``no_ground_contact``, ``arm_swing_absent``) need
+# geometry-specific knowledge this can't guess, so they show suggestion text only.
+
+
+def _fix_reduce_amplitude(session: EditorSession) -> bool:
+    return session.scale_all_motors(amplitude_factor=0.8)
+
+
+def _fix_reduce_amplitude_and_frequency(session: EditorSession) -> bool:
+    return session.scale_all_motors(amplitude_factor=0.8, frequency_factor=0.8)
+
+
+def _fix_reduce_amplitude_slightly(session: EditorSession) -> bool:
+    return session.scale_all_motors(amplitude_factor=0.85)
+
+
+def _fix_reverse_gait(session: EditorSession) -> bool:
+    return session.reverse_gait()
+
+
+def _fix_wave_gait(session: EditorSession) -> bool:
+    session.apply_gait("wave")
+    return True
+
+
+def _fix_pace_gait(session: EditorSession) -> bool:
+    session.apply_gait("pace")
+    return True
+
+
+def _fix_trot_gait(session: EditorSession) -> bool:
+    session.apply_gait("trot")
+    return True
+
+
+def _fix_widen_stance(session: EditorSession) -> bool:
+    return session.widen_stance(1.15)
+
+
+def _fix_use_target_seek(session: EditorSession) -> bool:
+    session.set_controller("target_seek")
+    return True
+
+
+#: pattern -> (human label, fix function). See ``creature_lab.diagnosis`` for the
+#: patterns themselves and their explanations/suggestions.
+DIAGNOSIS_FIXES: dict[str, tuple[str, Callable[[EditorSession], bool]]] = {
+    "motor_over_limit": ("Reduce all motor amplitude by 20%", _fix_reduce_amplitude),
+    "moving_backward": ("Reverse the gait direction", _fix_reverse_gait),
+    "high_effort_low_result": ("Stagger motor phases (wave gait)", _fix_wave_gait),
+    "lateral_drift": ("Symmetrize left/right phases (pace gait)", _fix_pace_gait),
+    "single_leg_drag": ("Rebalance leg phases (trot gait)", _fix_trot_gait),
+    "com_instability": (
+        "Reduce motor amplitude and frequency by 20%",
+        _fix_reduce_amplitude_and_frequency,
+    ),
+    "knee_hyperextension": ("Reduce all motor amplitude by 15%", _fix_reduce_amplitude_slightly),
+    "early_fall": ("Widen stance by 15%", _fix_widen_stance),
+    "stance_too_narrow": ("Widen stance by 15%", _fix_widen_stance),
+    "target_not_approached": ("Switch to the target_seek controller", _fix_use_target_seek),
+}
+
+#: pattern -> severity, for the diagnosis card UI. Unlisted patterns default to "warning".
+DIAGNOSIS_SEVERITY: dict[str, str] = {
+    "motor_over_limit": "critical",
+    "no_ground_contact": "critical",
+    "early_fall": "critical",
+    "moving_backward": "critical",
+    "biped_asymmetric_fall": "critical",
+    "high_effort_low_result": "warning",
+    "lateral_drift": "warning",
+    "single_leg_drag": "warning",
+    "com_instability": "warning",
+    "knee_hyperextension": "warning",
+    "stance_too_narrow": "warning",
+    "target_not_approached": "warning",
+    "arm_swing_absent": "info",
+}

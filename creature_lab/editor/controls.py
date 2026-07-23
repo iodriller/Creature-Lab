@@ -1,7 +1,25 @@
-"""Viser GUI controls for build mode."""
+"""Viser GUI for the build editor.
+
+The panel is organised as the product loop, not as a wall of folders:
+
+    Project + History (always visible)
+      -> Design  ->  Motion  ->  Test        (tabs)
+
+Each tab owns a few rebuildable folders. A **Basic/Advanced** switch (backed by
+``EditorSession.mode``) hides the controls a first-time user does not need.
+
+Simulate and the robustness sweep run through an :class:`~creature_lab.editor.jobs.
+EditorJobManager` in the background (see ``editor/live.py``), so the panel stays
+responsive; :meth:`BuildControls.tick` is called once per main-loop iteration to poll
+job progress and advance trace playback. All the editing/diagnosis/history logic
+itself lives in the pure :class:`~creature_lab.editor.session.EditorSession`; this
+file only wires widgets to it and decides what to show.
+"""
 
 from __future__ import annotations
 
+import time
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -9,10 +27,17 @@ from typing import Any
 from creature_lab.diagnosis import diagnose
 from creature_lab.diagnostics import summarize_episode
 from creature_lab.editor import presets
-from creature_lab.editor.session import EditorSession
-from creature_lab.robustness import RobustnessResult
-from creature_lab.schema import EpisodeTrace
+from creature_lab.editor.jobs import EditorJobManager, JobStatus
+from creature_lab.editor.playback import EditorPlayback
+from creature_lab.editor.session import AVAILABLE_CONTROLLERS, EditorSession
+from creature_lab.hashing import spec_hash
+from creature_lab.qualification import BUILTIN_PROFILES, QualificationResult
+from creature_lab.robustness import ROBUSTNESS_LEVELS, RobustnessResult, plain_language_verdict
+from creature_lab.runs import DEFAULT_RUNS_DIR, RunSummary, list_recent_runs, load_trace
+from creature_lab.schema import EpisodeSummary, EpisodeTrace, FrameState, TaskSpec
 from creature_lab.schema.creature import ShapeType
+
+_SEVERITY_TAG = {"critical": "**[CRITICAL]**", "warning": "**[WARNING]**", "info": "**[INFO]**"}
 
 
 class BuildControls:
@@ -23,52 +48,131 @@ class BuildControls:
         gui: Any,
         session: EditorSession,
         *,
+        job_manager: EditorJobManager,
+        playback: EditorPlayback,
         on_preview: Callable[[], None],
-        on_simulate: Callable[[], tuple[str, EpisodeTrace | None]],
-        on_robustness: Callable[[int, float, float], tuple[str, RobustnessResult | None]],
+        on_preview_light: Callable[[], None] | None = None,
+        on_start_simulate: Callable[[], None],
+        on_start_robustness: Callable[[int, float, float], None],
+        on_start_qualify: Callable[[str], None],
+        on_playback_frame: Callable[[FrameState], None],
+        runs_dir: Path = DEFAULT_RUNS_DIR,
+        show_onboarding: bool = False,
     ) -> None:
         self.gui = gui
         self.session = session
+        self.job_manager = job_manager
+        self.playback = playback
         self.on_preview = on_preview
-        self.on_simulate = on_simulate
-        self.on_robustness = on_robustness
+        self.on_preview_light = on_preview_light or on_preview
+        self.on_start_simulate = on_start_simulate
+        self.on_start_robustness = on_start_robustness
+        self.on_start_qualify = on_start_qualify
+        self.on_playback_frame = on_playback_frame
+        self.runs_dir = runs_dir
+        # Phase containers (created once) and the rebuildable folders inside them.
+        # These are explicit show/hide folders instead of browser-local tabs, so a
+        # completed run can always provide a real "Back to Design" action that also
+        # restores the editable pose in the 3D scene.
+        self._phase_selector: Any | None = None
+        self._design_tab: Any | None = None
+        self._motion_tab: Any | None = None
+        self._test_tab: Any | None = None
         self._body_folder: Any | None = None
         self._part_folder: Any | None = None
         self._motion_folder: Any | None = None
         self._task_folder: Any | None = None
+        self._playback_folder: Any | None = None
         self._metrics_folder: Any | None = None
         self._robustness_folder: Any | None = None
+        self._qualify_folder: Any | None = None
+        self._run_history_folder: Any | None = None
+        self._onboarding_folder: Any | None = None
+        # Persistent handles updated in place.
         self._message: Any | None = None
         self._simulate_button: Any | None = None
+        self._undo_button: Any | None = None
+        self._redo_button: Any | None = None
         self._reload_button: Any | None = None
+        self._restore_dropdown: Any | None = None
+        self._job_progress_bar: Any | None = None
+        self._job_status_md: Any | None = None
+        self._cancel_button: Any | None = None
+        self._playback_slider: Any | None = None
+        self._playback_play_button: Any | None = None
         self._robustness_button: Any | None = None
         self._robustness_result_md: Any | None = None
+        self._qualify_button: Any | None = None
+        self._qualify_result_md: Any | None = None
         self._last_trace: EpisodeTrace | None = None
         self._last_robustness: RobustnessResult | None = None
-        self._build()
+        self._last_qualification: QualificationResult | None = None
+        #: (creature_hash, task_hash, controller) that produced the currently shown
+        #: Result/Robustness/Qualify. When the live config drifts from this, those
+        #: results are stale and get cleared so the panel never shows a score from
+        #: one configuration next to a status/error from another (see
+        #: ``_discard_stale_result``).
+        self._last_run_signature: tuple[str, str, str] | None = None
+        self._pending_job_kind: str | None = None
+        self._run_history_by_label: dict[str, RunSummary] = {}
+        self._build(show_onboarding=show_onboarding)
 
-    def _build(self) -> None:
-        with self.gui.add_folder("Start", expand_by_default=True):
-            initial = (
-                presets.preset_label(self.session.template)
-                if self.session.template in presets.CREATURE_PRESETS
-                else presets.preset_label("quadruped")
-            )
-            template = self.gui.add_dropdown(
-                "Template", presets.preset_labels(), initial_value=initial
-            )
-            template.on_update(
-                lambda event: self._safe(
-                    lambda: self.session.apply_template(
-                        presets.preset_name_from_label(event.target.value)
-                    ),
-                    rebuild_body=True,
-                    rebuild_part=True,
-                    rebuild_motion=True,
-                    rebuild_task=False,
-                )
-            )
+    @property
+    def _advanced(self) -> bool:
+        return self.session.mode == "advanced"
 
+    # -- top-level layout -------------------------------------------------------
+
+    def _build(self, *, show_onboarding: bool = False) -> None:
+        self.gui.add_markdown("## Creature Lab")
+        self.gui.add_markdown("_Design -> Move -> Test -> Improve_")
+
+        # First-run picker, at the top of the panel so it is the first thing seen.
+        # Deliberately an inline folder, NOT a modal: a Viser/Mantine modal traps
+        # focus onto its first control, which auto-opens the Creature dropdown right
+        # over the Start/Skip buttons - making the whole first run unclickable
+        # (see docs/KNOWN_ISSUES.md). A normal panel dropdown never auto-opens.
+        if show_onboarding:
+            self._build_onboarding_panel()
+
+        self._build_project_folder()
+        self._build_history_folder()
+        self._message = self.gui.add_markdown("")
+        self._build_job_status_widgets()
+
+        self._phase_selector = self.gui.add_button_group("Phase", ["Design", "Motion", "Test"])
+        self._phase_selector.on_click(lambda event: self._show_phase(event.target.value))
+        self._design_tab = self.gui.add_folder("1 · Design", expand_by_default=True)
+        self._motion_tab = self.gui.add_folder("2 · Motion", expand_by_default=True, visible=False)
+        self._test_tab = self.gui.add_folder("3 · Test", expand_by_default=True, visible=False)
+
+        with self._design_tab:
+            self._build_template_picker()
+        with self._test_tab:
+            self._build_run_section()
+
+        self._rebuild_all()
+        self._update_status()
+
+    def _show_phase(self, phase: str) -> None:
+        """Show one workflow phase and restore design state when leaving playback."""
+        if phase not in {"Design", "Motion", "Test"}:
+            return
+        if self._phase_selector is not None and self._phase_selector.value != phase:
+            self._phase_selector.value = phase
+        for name, handle in (
+            ("Design", self._design_tab),
+            ("Motion", self._motion_tab),
+            ("Test", self._test_tab),
+        ):
+            if handle is not None:
+                handle.visible = name == phase
+        if phase != "Test":
+            self.playback.pause()
+            self.on_preview()
+
+    def _build_project_folder(self) -> None:
+        with self.gui.add_folder("Project", expand_by_default=False):
             name = self.gui.add_text("Name", self.session.creature.name)
             name.on_update(
                 lambda event: self._safe(
@@ -79,7 +183,6 @@ class BuildControls:
                     rebuild_task=False,
                 )
             )
-
             load_path = self.gui.add_text(
                 "Open path",
                 str(self.session.source_path or self.session.out_path),
@@ -96,14 +199,13 @@ class BuildControls:
                     rebuild_task=True,
                 )
             )
-
             save_path = self.gui.add_text(
                 "Save path",
                 str(self.session.out_path),
                 hint="Extension picks the format: .json (CreatureSpec), .urdf, or .xml/.mjcf "
                 "(MJCF export is one-way; it cannot be re-opened here).",
             )
-            save_button = self.gui.add_button("Save", icon="device-floppy")
+            save_button = self.gui.add_button("Save", icon="device-floppy", color="green")
             save_button.on_click(
                 lambda _event: self._safe(
                     lambda: self.session.save(Path(save_path.value)),
@@ -113,42 +215,141 @@ class BuildControls:
                     rebuild_task=False,
                 )
             )
-
             if self.session.project_dir is not None:
                 self.gui.add_markdown(f"**Project (live-synced):** `{self.session.project_dir}`")
                 self._reload_button = self.gui.add_button("Reload from disk", icon="refresh-dot")
-                self._reload_button.on_click(
-                    lambda _event: self._safe(
-                        self.session.reload_project,
-                        rebuild_body=True,
-                        rebuild_part=True,
-                        rebuild_motion=True,
-                        rebuild_task=True,
-                    )
+                self._reload_button.on_click(lambda _event: self._confirm_reload())
+                overwrite_button = self.gui.add_button(
+                    "Overwrite disk with editor", icon="device-floppy", color="orange"
                 )
+                overwrite_button.on_click(lambda _event: self._confirm_overwrite_project())
 
+    def _build_history_folder(self) -> None:
+        with self.gui.add_folder("History", expand_by_default=True):
+            advanced = self.gui.add_checkbox(
+                "Advanced mode",
+                self._advanced,
+                hint="Show exact dimensions, mass, colours, raw phases, friction, and "
+                "robustness jitter. Off keeps only the controls needed for a first run.",
+            )
+            advanced.on_update(
+                lambda event: self._safe(
+                    lambda: self.session.set_mode("advanced" if event.target.value else "basic"),
+                    rebuild_body=True,
+                    rebuild_part=True,
+                    rebuild_motion=True,
+                    rebuild_task=True,
+                )
+            )
+            self._undo_button = self.gui.add_button("Undo", icon="arrow-back-up")
+            self._undo_button.on_click(lambda _event: self._history_action(self.session.undo))
+            self._redo_button = self.gui.add_button("Redo", icon="arrow-forward-up")
+            self._redo_button.on_click(lambda _event: self._history_action(self.session.redo))
+            reset = self.gui.add_button("Reset to template", icon="rotate")
+            reset.on_click(lambda _event: self._history_action(self.session.reset_to_template))
+
+            snapshot_name = self.gui.add_text("Snapshot name", "")
+            save_snapshot = self.gui.add_button("Save snapshot", icon="camera")
+            save_snapshot.on_click(
+                lambda _event: self._safe(
+                    lambda: self.session.save_snapshot(snapshot_name.value),
+                    rebuild_body=False,
+                    rebuild_part=False,
+                    rebuild_motion=False,
+                    rebuild_task=False,
+                    after=self._refresh_restore_options,
+                )
+            )
+            self._restore_dropdown = self.gui.add_dropdown(
+                "Restore", ["(none)", *self.session.snapshot_names()], initial_value="(none)"
+            )
+            restore_button = self.gui.add_button("Restore snapshot", icon="history")
+            restore_button.on_click(lambda _event: self._restore_selected_snapshot())
+
+    def _build_job_status_widgets(self) -> None:
+        """Progress bar + status text + cancel, shared by Simulate and Robustness.
+
+        Created once, hidden (``visible=False``) until a job is running - see
+        ``_render_job_status``, called every ``tick()``.
+        """
+        self._job_progress_bar = self.gui.add_progress_bar(0.0, visible=False, animated=True)
+        self._job_status_md = self.gui.add_markdown("")
+        self._cancel_button = self.gui.add_button("Cancel", icon="player-stop", color="red")
+        self._cancel_button.visible = False
+        self._cancel_button.on_click(lambda _event: self.job_manager.cancel())
+
+    def _build_template_picker(self) -> None:
+        initial = (
+            presets.preset_label(self.session.template)
+            if self.session.template in presets.CREATURE_PRESETS
+            else presets.preset_label("quadruped")
+        )
+        template = self.gui.add_dropdown(
+            "Start from", presets.preset_labels(), initial_value=initial
+        )
+        template.on_update(
+            lambda event: self._safe(
+                lambda: self.session.apply_template(
+                    presets.preset_name_from_label(event.target.value)
+                ),
+                rebuild_body=True,
+                rebuild_part=True,
+                rebuild_motion=True,
+                rebuild_task=False,
+            )
+        )
+
+    def _build_run_section(self) -> None:
+        with self.gui.add_folder("Run", expand_by_default=True):
+            back_to_design = self.gui.add_button("Back to Design", icon="arrow-left")
+            back_to_design.on_click(lambda _event: self._show_phase("Design"))
+            controller = self.gui.add_dropdown(
+                "Controller",
+                list(AVAILABLE_CONTROLLERS),
+                initial_value=self.session.controller,
+                hint="'target_seek' steers toward the task's target - pick a task with "
+                "one (e.g. reach_target) or it errors when you Simulate.",
+            )
+            controller.on_update(
+                lambda event: self._safe(
+                    lambda: self.session.set_controller(event.target.value),
+                    rebuild_body=False,
+                    rebuild_part=False,
+                    rebuild_motion=False,
+                    rebuild_task=False,
+                    preview="none",
+                )
+            )
+            validate = self.gui.add_button("Validate", icon="check")
+            validate.on_click(lambda _event: self._update_status())
+            self._simulate_button = self.gui.add_button(
+                "Simulate", icon="player-play", color="blue"
+            )
+            self._simulate_button.on_click(lambda _event: self._start_simulate())
+
+    # -- rebuild orchestration --------------------------------------------------
+
+    def _rebuild_all(self) -> None:
         self._rebuild_body_controls()
         self._rebuild_part_controls()
         self._rebuild_motion_controls()
         self._rebuild_task_controls()
-
-        with self.gui.add_folder("Run", expand_by_default=True):
-            validate = self.gui.add_button("Validate", icon="check")
-            validate.on_click(lambda _event: self._update_status())
-            self._simulate_button = self.gui.add_button("Simulate", icon="player-play")
-            self._simulate_button.on_click(lambda _event: self._simulate())
-            self._message = self.gui.add_markdown("")
+        self._rebuild_playback_controls()
         self._rebuild_metrics_controls()
         self._rebuild_robustness_controls()
-        self._update_status()
+        self._rebuild_qualify_controls()
+        self._rebuild_run_history_controls()
 
     def scene_selected(self, part_id: str) -> None:
+        # Selection alone never changes geometry - only the overlay (gizmo/CoM
+        # markers) needs to move, so this skips the expensive full scene rebuild.
         self._safe(
             lambda: self.session.select_part(part_id),
             rebuild_body=False,
             rebuild_part=True,
             rebuild_motion=False,
             rebuild_task=False,
+            preview="light",
         )
 
     def scene_changed(self) -> None:
@@ -166,6 +367,8 @@ class BuildControls:
         rebuild_part: bool,
         rebuild_motion: bool,
         rebuild_task: bool,
+        after: Callable[[], None] | None = None,
+        preview: str = "full",
     ) -> None:
         try:
             operation()
@@ -177,6 +380,19 @@ class BuildControls:
             rebuild_part=rebuild_part,
             rebuild_motion=rebuild_motion,
             rebuild_task=rebuild_task,
+            preview=preview,
+        )
+        if after is not None:
+            after()
+
+    def _history_action(self, operation: Callable[[], Any]) -> None:
+        """Undo/redo/reset/apply-fix can all change any part of the design."""
+        self._safe(
+            operation,
+            rebuild_body=True,
+            rebuild_part=True,
+            rebuild_motion=True,
+            rebuild_task=True,
         )
 
     def _refresh(
@@ -186,6 +402,7 @@ class BuildControls:
         rebuild_part: bool,
         rebuild_motion: bool,
         rebuild_task: bool,
+        preview: str = "full",
     ) -> None:
         if rebuild_body:
             self._rebuild_body_controls()
@@ -195,7 +412,15 @@ class BuildControls:
             self._rebuild_motion_controls()
         if rebuild_task:
             self._rebuild_task_controls()
-        self.on_preview()
+        if self._discard_stale_result():
+            self._rebuild_metrics_controls()
+            self._rebuild_playback_controls()
+            self._render_robustness_result()
+            self._render_qualify_result()
+        if preview == "light":
+            self.on_preview_light()
+        elif preview != "none":
+            self.on_preview()
         self._update_status()
 
     def _remove_folder(self, attr: str) -> None:
@@ -207,13 +432,16 @@ class BuildControls:
                 pass
         setattr(self, attr, None)
 
+    # -- Design tab: body -------------------------------------------------------
+
     def _rebuild_body_controls(self) -> None:
         self._remove_folder("_body_folder")
-        self._body_folder = self.gui.add_folder("Body", expand_by_default=True)
+        with self._design_tab:
+            self._body_folder = self.gui.add_folder("Body", expand_by_default=True)
         with self._body_folder:
             if self.session.template == "custom":
                 self.gui.add_markdown(
-                    "Loaded JSON is custom. Use **Selected part** and **Motion** controls."
+                    "Loaded JSON is custom. Use **Selected part** and the **Motion** tab."
                 )
                 return
             preset = presets.CREATURE_PRESETS[self.session.template]
@@ -237,10 +465,14 @@ class BuildControls:
                     )
                 )
 
+    # -- Design tab: selected part ---------------------------------------------
+
     def _rebuild_part_controls(self) -> None:
         self._remove_folder("_part_folder")
-        self._part_folder = self.gui.add_folder("Selected part", expand_by_default=True)
+        with self._design_tab:
+            self._part_folder = self.gui.add_folder("Selected part", expand_by_default=True)
         with self._part_folder:
+            self.gui.add_markdown(self.session.part_hierarchy_markdown())
             part = self.session.selected_part()
             part_select = self.gui.add_dropdown(
                 "Part",
@@ -254,97 +486,52 @@ class BuildControls:
                     rebuild_part=True,
                     rebuild_motion=False,
                     rebuild_task=False,
+                    preview="light",
                 )
             )
 
-            shape = self.gui.add_dropdown(
-                "Shape",
-                [shape.value for shape in ShapeType],
-                initial_value=part.shape.value,
-            )
-            shape.on_update(
-                lambda event: self._safe(
-                    lambda: self.session.update_selected_part(shape=event.target.value),
-                    rebuild_body=False,
-                    rebuild_part=True,
-                    rebuild_motion=False,
-                    rebuild_task=False,
+            if self._advanced:
+                shape = self.gui.add_dropdown(
+                    "Shape",
+                    [shape.value for shape in ShapeType],
+                    initial_value=part.shape.value,
                 )
-            )
-
-            mass = self.gui.add_slider(
-                "Mass",
-                min=0.01,
-                max=max(5.0, part.mass * 3),
-                step=0.01,
-                initial_value=part.mass,
-            )
-            mass.on_update(
-                lambda event: self._safe(
-                    lambda: self.session.update_selected_part(mass=float(event.target.value)),
-                    rebuild_body=False,
-                    rebuild_part=False,
-                    rebuild_motion=False,
-                    rebuild_task=False,
-                )
-            )
-
-            color = tuple(int(round(channel * 255)) for channel in (part.color or (0.6, 0.6, 0.6)))
-            color_handle = self.gui.add_rgb("Color", color)
-            color_handle.on_update(
-                lambda event: self._safe(
-                    lambda: self.session.update_selected_part(color=event.target.value),
-                    rebuild_body=False,
-                    rebuild_part=False,
-                    rebuild_motion=False,
-                    rebuild_task=False,
-                )
-            )
-
-            if part.shape == ShapeType.BOX and part.size is not None:
-                self._add_size_slider("Size X", 0, part.size)
-                self._add_size_slider("Size Y", 1, part.size)
-                self._add_size_slider("Size Z", 2, part.size)
-            elif part.shape == ShapeType.SPHERE and part.radius is not None:
-                radius = self.gui.add_slider(
-                    "Radius", min=0.005, max=0.5, step=0.005, initial_value=part.radius
-                )
-                radius.on_update(
+                shape.on_update(
                     lambda event: self._safe(
-                        lambda: self.session.update_selected_part(radius=float(event.target.value)),
+                        lambda: self.session.update_selected_part(shape=event.target.value),
                         rebuild_body=False,
-                        rebuild_part=False,
+                        rebuild_part=True,
                         rebuild_motion=False,
                         rebuild_task=False,
                     )
                 )
-            else:
-                radius = self.gui.add_slider(
-                    "Radius",
-                    min=0.005,
-                    max=0.25,
-                    step=0.005,
-                    initial_value=part.radius or 0.03,
-                )
-                radius.on_update(
-                    lambda event: self._safe(
-                        lambda: self.session.update_selected_part(radius=float(event.target.value)),
-                        rebuild_body=False,
-                        rebuild_part=False,
-                        rebuild_motion=False,
-                        rebuild_task=False,
-                    )
-                )
-                length = self.gui.add_slider(
-                    "Length",
-                    min=0.02,
-                    max=1.2,
+
+            self._add_dimension_controls(part)
+
+            if self._advanced:
+                mass = self.gui.add_slider(
+                    "Mass",
+                    min=0.01,
+                    max=max(5.0, part.mass * 3),
                     step=0.01,
-                    initial_value=part.length or 0.2,
+                    initial_value=part.mass,
                 )
-                length.on_update(
+                mass.on_update(
                     lambda event: self._safe(
-                        lambda: self.session.update_selected_part(length=float(event.target.value)),
+                        lambda: self.session.update_selected_part(mass=float(event.target.value)),
+                        rebuild_body=False,
+                        rebuild_part=False,
+                        rebuild_motion=False,
+                        rebuild_task=False,
+                    )
+                )
+                color = tuple(
+                    int(round(channel * 255)) for channel in (part.color or (0.6, 0.6, 0.6))
+                )
+                color_handle = self.gui.add_rgb("Color", color)
+                color_handle.on_update(
+                    lambda event: self._safe(
+                        lambda: self.session.update_selected_part(color=event.target.value),
                         rebuild_body=False,
                         rebuild_part=False,
                         rebuild_motion=False,
@@ -362,17 +549,9 @@ class BuildControls:
                     rebuild_task=False,
                 )
             )
-            delete = self.gui.add_button("Delete part", icon="trash")
-            delete.on_click(
-                lambda _event: self._safe(
-                    self.session.delete_selected_part,
-                    rebuild_body=False,
-                    rebuild_part=True,
-                    rebuild_motion=True,
-                    rebuild_task=False,
-                )
-            )
-            mirror_left = self.gui.add_button("Mirror left to right", icon="copy")
+            delete = self.gui.add_button("Delete part", icon="trash", color="red")
+            delete.on_click(lambda _event: self._confirm_delete())
+            mirror_left = self.gui.add_button("Mirror left -> right", icon="copy")
             mirror_left.on_click(
                 lambda _event: self._safe(
                     lambda: self.session.mirror("left"),
@@ -382,16 +561,70 @@ class BuildControls:
                     rebuild_task=False,
                 )
             )
-            mirror_right = self.gui.add_button("Mirror right to left", icon="copy")
-            mirror_right.on_click(
-                lambda _event: self._safe(
-                    lambda: self.session.mirror("right"),
+            if self._advanced:
+                mirror_right = self.gui.add_button("Mirror right -> left", icon="copy")
+                mirror_right.on_click(
+                    lambda _event: self._safe(
+                        lambda: self.session.mirror("right"),
+                        rebuild_body=False,
+                        rebuild_part=True,
+                        rebuild_motion=True,
+                        rebuild_task=False,
+                    )
+                )
+
+    def _add_dimension_controls(self, part: Any) -> None:
+        if part.shape == ShapeType.BOX and part.size is not None:
+            self._add_size_slider("Size X", 0, part.size)
+            self._add_size_slider("Size Y", 1, part.size)
+            self._add_size_slider("Size Z", 2, part.size)
+        elif part.shape == ShapeType.SPHERE and part.radius is not None:
+            radius = self.gui.add_slider(
+                "Radius", min=0.005, max=0.5, step=0.005, initial_value=part.radius
+            )
+            radius.on_update(
+                lambda event: self._safe(
+                    lambda: self.session.update_selected_part(radius=float(event.target.value)),
                     rebuild_body=False,
-                    rebuild_part=True,
-                    rebuild_motion=True,
+                    rebuild_part=False,
+                    rebuild_motion=False,
                     rebuild_task=False,
                 )
             )
+        else:
+            length = self.gui.add_slider(
+                "Length",
+                min=0.02,
+                max=1.2,
+                step=0.01,
+                initial_value=part.length or 0.2,
+            )
+            length.on_update(
+                lambda event: self._safe(
+                    lambda: self.session.update_selected_part(length=float(event.target.value)),
+                    rebuild_body=False,
+                    rebuild_part=False,
+                    rebuild_motion=False,
+                    rebuild_task=False,
+                )
+            )
+            if self._advanced:
+                radius = self.gui.add_slider(
+                    "Radius",
+                    min=0.005,
+                    max=0.25,
+                    step=0.005,
+                    initial_value=part.radius or 0.03,
+                )
+                radius.on_update(
+                    lambda event: self._safe(
+                        lambda: self.session.update_selected_part(radius=float(event.target.value)),
+                        rebuild_body=False,
+                        rebuild_part=False,
+                        rebuild_motion=False,
+                        rebuild_task=False,
+                    )
+                )
 
     def _add_size_slider(
         self, label: str, index: int, current_size: tuple[float, float, float]
@@ -419,12 +652,17 @@ class BuildControls:
         size[index] = value
         self.session.update_selected_part(size=tuple(size))
 
+    # -- Motion tab -------------------------------------------------------------
+
     def _rebuild_motion_controls(self) -> None:
         self._remove_folder("_motion_folder")
-        self._motion_folder = self.gui.add_folder("Motion", expand_by_default=False)
+        with self._motion_tab:
+            self._motion_folder = self.gui.add_folder("Movement", expand_by_default=True)
         with self._motion_folder:
             if not self.session.creature.motors:
-                self.gui.add_markdown("No motors yet. Add a hinged limb to create one.")
+                self.gui.add_markdown(
+                    "No motors yet. Add a hinged limb in **Design** to create one."
+                )
                 return
             gait = self.gui.add_dropdown(
                 "Gait preset",
@@ -453,11 +691,12 @@ class BuildControls:
                     rebuild_part=False,
                     rebuild_motion=True,
                     rebuild_task=False,
+                    preview="none",  # which motor is selected has no visual effect
                 )
             )
             motor = next(m for m in self.session.creature.motors if m.joint == motor_id)
             amplitude = self.gui.add_slider(
-                "Amplitude", min=0.0, max=1.8, step=0.05, initial_value=motor.amplitude
+                "Range (amplitude)", min=0.0, max=1.8, step=0.05, initial_value=motor.amplitude
             )
             amplitude.on_update(
                 lambda event: self._safe(
@@ -469,7 +708,7 @@ class BuildControls:
                 )
             )
             frequency = self.gui.add_slider(
-                "Frequency", min=0.0, max=6.0, step=0.1, initial_value=motor.frequency
+                "Speed (frequency)", min=0.0, max=6.0, step=0.1, initial_value=motor.frequency
             )
             frequency.on_update(
                 lambda event: self._safe(
@@ -480,22 +719,58 @@ class BuildControls:
                     rebuild_task=False,
                 )
             )
-            phase = self.gui.add_slider(
-                "Phase", min=-6.28, max=6.28, step=0.05, initial_value=motor.phase
-            )
-            phase.on_update(
-                lambda event: self._safe(
-                    lambda: self.session.update_selected_motor(phase=float(event.target.value)),
-                    rebuild_body=False,
-                    rebuild_part=False,
-                    rebuild_motion=False,
-                    rebuild_task=False,
+            if self._advanced:
+                offset = self.gui.add_slider(
+                    "Center (offset)", min=-1.2, max=1.2, step=0.02, initial_value=motor.offset
                 )
-            )
+                offset.on_update(
+                    lambda event: self._safe(
+                        lambda: self.session.update_selected_motor(
+                            offset=float(event.target.value)
+                        ),
+                        rebuild_body=False,
+                        rebuild_part=False,
+                        rebuild_motion=False,
+                        rebuild_task=False,
+                    )
+                )
+                phase = self.gui.add_slider(
+                    "Phase", min=-6.28, max=6.28, step=0.05, initial_value=motor.phase
+                )
+                phase.on_update(
+                    lambda event: self._safe(
+                        lambda: self.session.update_selected_motor(phase=float(event.target.value)),
+                        rebuild_body=False,
+                        rebuild_part=False,
+                        rebuild_motion=False,
+                        rebuild_task=False,
+                    )
+                )
+                max_force = self.gui.add_slider(
+                    "Max torque (N·m)",
+                    min=1.0,
+                    max=400.0,
+                    step=1.0,
+                    initial_value=motor.max_force or 5.0,
+                )
+                max_force.on_update(
+                    lambda event: self._safe(
+                        lambda: self.session.update_selected_motor(
+                            max_force=float(event.target.value)
+                        ),
+                        rebuild_body=False,
+                        rebuild_part=False,
+                        rebuild_motion=False,
+                        rebuild_task=False,
+                    )
+                )
+
+    # -- Test phase: task -------------------------------------------------------
 
     def _rebuild_task_controls(self) -> None:
         self._remove_folder("_task_folder")
-        self._task_folder = self.gui.add_folder("Task", expand_by_default=False)
+        with self._test_tab:
+            self._task_folder = self.gui.add_folder("Task", expand_by_default=True)
         with self._task_folder:
             task = self.gui.add_dropdown(
                 "Task",
@@ -531,40 +806,330 @@ class BuildControls:
                     rebuild_task=False,
                 )
             )
-            friction = self.gui.add_slider(
-                "Friction",
-                min=0.0,
-                max=2.0,
-                step=0.05,
-                initial_value=self.session.task.terrain.friction,
-            )
-            friction.on_update(
-                lambda event: self._safe(
-                    lambda: self.session.set_task_friction(float(event.target.value)),
-                    rebuild_body=False,
-                    rebuild_part=False,
-                    rebuild_motion=False,
-                    rebuild_task=False,
+            if self.session.task.target is not None:
+                target = self.session.task.target
+                self.gui.add_markdown("**Target** — drag the orange target in 3D or tune it here.")
+                target_values = list(target.position)
+                labels = ("Target X", "Target Y", "Target Z")
+                ranges = ((-5.0, 10.0), (-5.0, 5.0), (0.02, 3.0))
+                for index, label in enumerate(labels):
+                    slider = self.gui.add_slider(
+                        label,
+                        min=ranges[index][0],
+                        max=ranges[index][1],
+                        step=0.05,
+                        initial_value=target_values[index],
+                    )
+                    slider.on_update(
+                        lambda event, index=index: self._safe(
+                            lambda: self._set_target_axis(index, float(event.target.value)),
+                            rebuild_body=False,
+                            rebuild_part=False,
+                            rebuild_motion=False,
+                            rebuild_task=False,
+                        )
+                    )
+                radius = self.gui.add_slider(
+                    "Target radius",
+                    min=0.05,
+                    max=2.0,
+                    step=0.05,
+                    initial_value=target.radius,
                 )
+                radius.on_update(
+                    lambda event: self._safe(
+                        lambda: self.session.set_target_radius(float(event.target.value)),
+                        rebuild_body=False,
+                        rebuild_part=False,
+                        rebuild_motion=False,
+                        rebuild_task=False,
+                    )
+                )
+            if self._advanced:
+                friction = self.gui.add_slider(
+                    "Friction",
+                    min=0.0,
+                    max=2.0,
+                    step=0.05,
+                    initial_value=self.session.task.terrain.friction,
+                )
+                friction.on_update(
+                    lambda event: self._safe(
+                        lambda: self.session.set_task_friction(float(event.target.value)),
+                        rebuild_body=False,
+                        rebuild_part=False,
+                        rebuild_motion=False,
+                        rebuild_task=False,
+                    )
+                )
+
+    def _set_target_axis(self, index: int, value: float) -> None:
+        if self.session.task.target is None:
+            return
+        position = list(self.session.task.target.position)
+        position[index] = value
+        self.session.set_target_position(tuple(position))
+
+    # -- Test phase: run (async) -------------------------------------------------
+
+    def _start_simulate(self) -> None:
+        if self.job_manager.is_running:
+            self.session.last_message = "A job is already running."
+            self._update_status()
+            return
+        status = self.session.status()
+        if not status.ok:
+            self.session.last_message = "Fix validation errors before simulating."
+            self._update_status()
+            return
+        self._pending_job_kind = "simulate"
+        self.on_start_simulate()
+        self._render_job_status(self.job_manager.status())
+
+    def _start_robustness(self, trials: int, mass_jitter: float, friction_jitter: float) -> None:
+        if self.job_manager.is_running:
+            self.session.last_message = "A job is already running."
+            self._update_status()
+            return
+        status = self.session.status()
+        if not status.ok:
+            self.session.last_message = "Fix validation errors before running a robustness sweep."
+            self._update_status()
+            return
+        self._pending_job_kind = "robustness"
+        self.on_start_robustness(trials, mass_jitter, friction_jitter)
+        self._render_job_status(self.job_manager.status())
+
+    def _start_qualify(self, profile_name: str) -> None:
+        if self.job_manager.is_running:
+            self.session.last_message = "A job is already running."
+            self._update_status()
+            return
+        status = self.session.status()
+        if not status.ok:
+            self.session.last_message = "Fix validation errors before qualifying."
+            self._update_status()
+            return
+        self._pending_job_kind = "qualify"
+        self.on_start_qualify(profile_name)
+        self._render_job_status(self.job_manager.status())
+
+    # -- background job polling (called from the main loop) ---------------------
+
+    def tick(self, dt: float) -> None:
+        """Poll the running job and advance playback. Call once per main-loop iteration."""
+        self._tick_job()
+        self._tick_playback(dt)
+
+    def _tick_job(self) -> None:
+        status = self.job_manager.status()
+        self._render_job_status(status)
+        if status.state == "completed":
+            self._consume_completed_job(status)
+            self.job_manager.clear()
+        elif status.state in ("cancelled", "failed"):
+            self._consume_ended_job(status)
+            self.job_manager.clear()
+
+    def _render_job_status(self, status: JobStatus) -> None:
+        running = status.state == "running"
+        if self._job_progress_bar is not None:
+            self._job_progress_bar.visible = running
+            self._job_progress_bar.value = status.progress * 100.0
+            self._job_progress_bar.animated = running and status.progress <= 0.0
+        if self._job_status_md is not None:
+            self._job_status_md.content = (
+                f"{status.message or 'Running…'} ({status.elapsed:.1f}s)" if running else ""
+            )
+        if self._cancel_button is not None:
+            self._cancel_button.visible = running
+        if self._simulate_button is not None:
+            self._simulate_button.disabled = running or not self.session.status().ok
+        if self._robustness_button is not None:
+            self._robustness_button.disabled = running
+        if self._qualify_button is not None:
+            self._qualify_button.disabled = running
+
+    def _current_run_signature(self) -> tuple[str, str, str]:
+        """Identity of the current (creature, task, controller) - a run is stale once
+        any of these drifts from what produced it."""
+        return (
+            spec_hash(self.session.creature),
+            spec_hash(self.session.task),
+            self.session.controller,
+        )
+
+    def _discard_stale_result(self) -> bool:
+        """Clear a shown Result/Robustness/Qualify once the live config no longer
+        matches what produced it. Returns True if anything was cleared (so the caller
+        rebuilds the now-empty panels). This is what stops the panel from showing,
+        say, a healthy sinusoid score right next to a 'target_seek needs a target'
+        error after the controller is switched."""
+        if self._last_run_signature is None:
+            return False
+        if self._last_run_signature == self._current_run_signature():
+            return False
+        self._last_trace = None
+        self._last_robustness = None
+        self._last_qualification = None
+        self._last_run_signature = None
+        self.playback.clear()
+        return True
+
+    def _consume_completed_job(self, status: JobStatus) -> None:
+        kind, self._pending_job_kind = self._pending_job_kind, None
+        self._last_run_signature = self._current_run_signature()
+        if kind == "simulate":
+            trace, run_dir = status.result
+            self._last_trace = trace
+            self.playback.load(trace)
+            first = self.playback.current_frame()
+            if first is not None:
+                self.on_playback_frame(first)
+            self.session.last_message = f"Simulated score={trace.score:.4f}; saved {run_dir}"
+            self._rebuild_playback_controls()
+            self._rebuild_run_history_controls()
+        elif kind == "robustness":
+            self._last_robustness = status.result
+            self.session.last_message = "Robustness sweep complete."
+        elif kind == "qualify":
+            self._last_qualification = status.result
+            verdict = "PASS" if status.result.passed else "FAIL"
+            self.session.last_message = f"Qualification: {verdict} ({status.result.profile})"
+        self._rebuild_metrics_controls()
+        self._render_robustness_result()
+        self._render_qualify_result()
+        self._update_status()
+
+    def _consume_ended_job(self, status: JobStatus) -> None:
+        self._pending_job_kind = None
+        if status.state == "cancelled":
+            self.session.last_message = "Cancelled."
+        else:
+            self.session.last_message = f"Failed: {status.error}"
+        self._update_status()
+
+    # -- Test phase: playback -----------------------------------------------------
+
+    def _tick_playback(self, dt: float) -> None:
+        if self.playback.advance(dt):
+            frame = self.playback.current_frame()
+            if frame is not None:
+                self.on_playback_frame(frame)
+            self._sync_playback_widgets()
+
+    def _rebuild_playback_controls(self) -> None:
+        self._remove_folder("_playback_folder")
+        with self._test_tab:
+            self._playback_folder = self.gui.add_folder("Playback", expand_by_default=True)
+        self._playback_slider = None
+        self._playback_play_button = None
+        with self._playback_folder:
+            if self.playback.trace is None:
+                self.gui.add_markdown("Run **Simulate** to get a trace to play back.")
+                return
+            self._playback_play_button = self.gui.add_button(
+                "Play / Pause",
+                icon="player-pause" if self.playback.playing else "player-play",
+            )
+            self._playback_play_button.on_click(lambda _event: self._toggle_playback())
+            self._playback_slider = self.gui.add_slider(
+                "Frame",
+                min=0,
+                max=max(0, self.playback.frame_count - 1),
+                step=1,
+                initial_value=self.playback.frame_index,
+            )
+            self._playback_slider.on_update(
+                lambda event: self._seek_playback(int(event.target.value))
+            )
+            step_back = self.gui.add_button("Step -1", icon="chevron-left")
+            step_back.on_click(lambda _event: self._step_playback(-1))
+            step_fwd = self.gui.add_button("Step +1", icon="chevron-right")
+            step_fwd.on_click(lambda _event: self._step_playback(1))
+            restart_button = self.gui.add_button("Restart", icon="player-skip-back")
+            restart_button.on_click(lambda _event: self._restart_playback())
+            if self._advanced:
+                loop_checkbox = self.gui.add_checkbox("Loop", self.playback.loop)
+                loop_checkbox.on_update(
+                    lambda event: setattr(self.playback, "loop", bool(event.target.value))
+                )
+                speed = self.gui.add_dropdown(
+                    "Speed", ["0.25x", "0.5x", "1x", "2x"], initial_value="1x"
+                )
+                speed.on_update(
+                    lambda event: setattr(
+                        self.playback, "speed", float(event.target.value.rstrip("x"))
+                    )
+                )
+
+    def _sync_playback_widgets(self) -> None:
+        if self._playback_slider is not None:
+            self._playback_slider.value = self.playback.frame_index
+        if self._playback_play_button is not None:
+            self._playback_play_button.icon = (
+                "player-pause" if self.playback.playing else "player-play"
             )
 
-    def _simulate(self) -> None:
-        if self._simulate_button is not None:
-            self._simulate_button.disabled = True
-        try:
-            self.session.last_message, self._last_trace = self.on_simulate()
-        except Exception as exc:
-            self.session.last_message = f"Simulation failed: {exc}"
-            self._last_trace = None
-        finally:
-            if self._simulate_button is not None:
-                self._simulate_button.disabled = False
-            self._rebuild_metrics_controls()
-            self._update_status()
+    def _toggle_playback(self) -> None:
+        self.playback.toggle()
+        self._sync_playback_widgets()
+
+    def _seek_playback(self, frame_index: int) -> None:
+        self.playback.seek(frame_index)
+        frame = self.playback.current_frame()
+        if frame is not None:
+            self.on_playback_frame(frame)
+
+    def _step_playback(self, delta: int) -> None:
+        self.playback.step(delta)
+        self._sync_playback_widgets()
+        frame = self.playback.current_frame()
+        if frame is not None:
+            self.on_playback_frame(frame)
+
+    def _restart_playback(self) -> None:
+        self.playback.to_start()
+        self._sync_playback_widgets()
+        frame = self.playback.current_frame()
+        if frame is not None:
+            self.on_playback_frame(frame)
+
+    # -- Test phase: scorecard + diagnosis ----------------------------------------
+
+    @staticmethod
+    def _progress_headline(summary: EpisodeSummary, task: TaskSpec) -> str:
+        """A concrete, plain-language description of what happened, leading with
+        whichever objective the task's reward actually weights.
+
+        The raw score alone misleads: an energy penalty (or a task like "stay
+        balanced" that is mostly penalties) can put a run that clearly succeeded -
+        walked toward the goal, stayed upright - into negative territory, which
+        reads as pure failure to a first-time user even though the creature did
+        what was asked. Leading with the concrete outcome fixes that without
+        hiding or softening the actual score, shown right below it.
+        """
+        reward = task.reward
+        bits: list[str] = []
+        if reward.target_distance != 0.0 and summary.target_progress is not None:
+            if summary.target_progress >= 0:
+                bits.append(f"moved {summary.target_progress:.2f} m closer to the target")
+            else:
+                bits.append(f"moved {-summary.target_progress:.2f} m farther from the target")
+        elif reward.forward_distance != 0.0:
+            direction = "forward" if summary.forward_displacement >= 0 else "backward"
+            bits.append(f"moved {abs(summary.forward_displacement):.2f} m {direction}")
+        if summary.fell is not None:
+            bits.append("fell" if summary.fell else "stayed upright")
+        if not bits:
+            bits.append(f"ran for {summary.duration:.1f}s")
+        headline = "; ".join(bits)
+        return headline[0].upper() + headline[1:]
 
     def _rebuild_metrics_controls(self) -> None:
         self._remove_folder("_metrics_folder")
-        self._metrics_folder = self.gui.add_folder("Metrics", expand_by_default=True)
+        with self._test_tab:
+            self._metrics_folder = self.gui.add_folder("Result", expand_by_default=True)
         with self._metrics_folder:
             if self._last_trace is None:
                 self.gui.add_markdown(
@@ -572,20 +1137,19 @@ class BuildControls:
                 )
                 return
             trace = self._last_trace
-            summary = summarize_episode(trace, self.session.task)
+            summary = summarize_episode(trace, self.session.task, self.session.creature)
             result = diagnose(trace, self.session.creature, self.session.task)
 
+            headline = self._progress_headline(summary, self.session.task)
+            self.gui.add_markdown(
+                f"### {headline}\nScore: {summary.final_score:+.3f} · {summary.duration:.1f}s"
+            )
             lines = [
-                f"- Score: **{summary.final_score:.4f}**",
-                f"- Duration: {summary.duration:.2f}s ({summary.frame_count} frames)",
-                f"- Forward displacement: {summary.forward_displacement:+.3f} m",
                 f"- Net displacement: {summary.net_displacement:.3f} m",
-                f"- Joint motion (Σ|Δrad|): {summary.total_joint_motion:.1f}",
+                f"- Joint motion (sum |change in angle|): {summary.total_joint_motion:.1f}",
             ]
             if summary.target_progress is not None:
                 lines.append(f"- Target progress: {summary.target_progress:+.3f} m")
-            if summary.fell is not None:
-                lines.append(f"- Fell: {'yes' if summary.fell else 'no'}")
             if summary.component_scores:
                 breakdown = ", ".join(
                     f"{key}={value:.3f}" for key, value in summary.component_scores.items()
@@ -594,56 +1158,76 @@ class BuildControls:
             self.gui.add_markdown("\n".join(lines))
 
             if result.patterns:
-                pattern_lines = ["**Diagnosis**"]
+                self.gui.add_markdown("**Diagnosis**")
                 for pattern, explanation, suggestion in zip(
                     result.patterns, result.explanations, result.suggestions, strict=True
                 ):
-                    pattern_lines.append(f"- **{pattern}**: {explanation}")
-                    pattern_lines.append(f"  - Suggestion: {suggestion}")
-                self.gui.add_markdown("\n".join(pattern_lines))
+                    self._render_diagnosis_card(pattern, explanation, suggestion)
             else:
-                self.gui.add_markdown("No failure patterns detected - this run looks healthy.")
+                self.gui.add_markdown("No failure patterns detected — this run looks healthy.")
 
             if summary.warnings:
                 self.gui.add_markdown(
                     "**Warnings**\n" + "\n".join(f"- {warning}" for warning in summary.warnings)
                 )
 
+    def _render_diagnosis_card(self, pattern: str, explanation: str, suggestion: str) -> None:
+        severity = self.session.diagnosis_severity(pattern)
+        tag = _SEVERITY_TAG.get(severity, "")
+        self.gui.add_markdown(f"{tag} **{pattern}**\n\n{explanation}\n\nSuggestion: {suggestion}")
+        fix_label = self.session.diagnosis_fix_label(pattern)
+        if fix_label is not None:
+            apply_button = self.gui.add_button(f"Apply fix: {fix_label}", icon="wand")
+            apply_button.on_click(lambda _event, p=pattern: self._apply_diagnosis_fix(p))
+
+    def _apply_diagnosis_fix(self, pattern: str) -> None:
+        self._history_action(lambda: self.session.apply_diagnosis_fix(pattern))
+
+    # -- Test phase: robustness -----------------------------------------------------
+
     def _rebuild_robustness_controls(self) -> None:
         self._remove_folder("_robustness_folder")
-        self._robustness_folder = self.gui.add_folder("Robustness", expand_by_default=False)
+        with self._test_tab:
+            self._robustness_folder = self.gui.add_folder("Robustness", expand_by_default=False)
         with self._robustness_folder:
             self.gui.add_markdown(
                 "Re-simulate under small seeded mass/friction perturbations. A wide score "
                 "spread or high fail rate means the result is fragile, not robust."
             )
-            trials_slider = self.gui.add_slider("Trials", min=2, max=50, step=1, initial_value=10)
-            mass_jitter_slider = self.gui.add_slider(
-                "Mass jitter", min=0.0, max=0.3, step=0.01, initial_value=0.05
-            )
-            friction_jitter_slider = self.gui.add_slider(
-                "Friction jitter", min=0.0, max=0.3, step=0.01, initial_value=0.05
-            )
+            level_dropdown = None
+            trials_slider = None
+            mass_jitter_slider = None
+            friction_jitter_slider = None
+            if self._advanced:
+                trials_slider = self.gui.add_slider(
+                    "Trials", min=2, max=50, step=1, initial_value=10
+                )
+                mass_jitter_slider = self.gui.add_slider(
+                    "Mass jitter", min=0.0, max=0.3, step=0.01, initial_value=0.05
+                )
+                friction_jitter_slider = self.gui.add_slider(
+                    "Friction jitter", min=0.0, max=0.3, step=0.01, initial_value=0.05
+                )
+            else:
+                level_dropdown = self.gui.add_dropdown(
+                    "Level", list(ROBUSTNESS_LEVELS), initial_value="Standard"
+                )
             self._robustness_button = self.gui.add_button("Run robustness sweep")
             self._robustness_result_md = self.gui.add_markdown("")
 
             def _run(_event: Any) -> None:
-                if self._robustness_button is not None:
-                    self._robustness_button.disabled = True
-                try:
-                    self.session.last_message, self._last_robustness = self.on_robustness(
-                        int(trials_slider.value),
-                        float(mass_jitter_slider.value),
-                        float(friction_jitter_slider.value),
-                    )
-                except Exception as exc:
-                    self.session.last_message = f"Robustness sweep failed: {exc}"
-                    self._last_robustness = None
-                finally:
-                    if self._robustness_button is not None:
-                        self._robustness_button.disabled = False
-                    self._render_robustness_result()
-                    self._update_status()
+                trials = (
+                    int(trials_slider.value)
+                    if trials_slider is not None
+                    else ROBUSTNESS_LEVELS[level_dropdown.value]
+                )
+                mass = float(mass_jitter_slider.value) if mass_jitter_slider is not None else 0.05
+                friction = (
+                    float(friction_jitter_slider.value)
+                    if friction_jitter_slider is not None
+                    else 0.05
+                )
+                self._start_robustness(trials, mass, friction)
 
             self._robustness_button.on_click(_run)
             self._render_robustness_result()
@@ -656,11 +1240,278 @@ class BuildControls:
             self._robustness_result_md.content = ""
             return
         lines = [
+            plain_language_verdict(result),
+            "",
             f"- Mean score: **{result.mean_score:.4f}** (std {result.std_score:.4f})",
             f"- Range: {result.min_score:.4f} to {result.max_score:.4f}",
             f"- Fail rate: {result.fail_rate:.0%}",
         ]
         self._robustness_result_md.content = "\n".join(lines)
+
+    # -- Test phase: qualify ---------------------------------------------------------
+
+    def _rebuild_qualify_controls(self) -> None:
+        self._remove_folder("_qualify_folder")
+        with self._test_tab:
+            self._qualify_folder = self.gui.add_folder("Qualify", expand_by_default=False)
+        with self._qualify_folder:
+            self.gui.add_markdown(
+                "Combine a baseline run, a robustness sweep, and (for **backend-portable**) "
+                "a cross-backend comparison into one pass/fail result with a named blocker "
+                "and a recommended next test."
+            )
+            profile_dropdown = self.gui.add_dropdown(
+                "Profile", list(BUILTIN_PROFILES), initial_value="basic-locomotion"
+            )
+            self._qualify_button = self.gui.add_button("Run qualification", icon="rubber-stamp")
+            self._qualify_result_md = self.gui.add_markdown("")
+
+            def _run(_event: Any) -> None:
+                self._start_qualify(profile_dropdown.value)
+
+            self._qualify_button.on_click(_run)
+            self._render_qualify_result()
+
+    def _render_qualify_result(self) -> None:
+        if self._qualify_result_md is None:
+            return
+        result = self._last_qualification
+        if result is None:
+            self._qualify_result_md.content = ""
+            return
+        verdict = "**PASS**" if result.passed else "**FAIL**"
+        lines = [f"### Qualification: {verdict} ({result.profile})"]
+        for check in result.checks:
+            mark = "PASS" if check.passed else "FAIL"
+            lines.append(f"- `{mark}` **{check.name}**: {check.detail}")
+        if result.primary_blocker is not None:
+            lines.append("")
+            lines.append(f"**Primary blocker:** {result.primary_blocker}")
+            lines.append(f"**Recommended next test:** {result.recommended_next_test}")
+        self._qualify_result_md.content = "\n".join(lines)
+
+    # -- Test phase: run history -----------------------------------------------------
+
+    def _rebuild_run_history_controls(self) -> None:
+        self._remove_folder("_run_history_folder")
+        with self._test_tab:
+            self._run_history_folder = self.gui.add_folder("Run History", expand_by_default=False)
+        with self._run_history_folder:
+            runs = list_recent_runs(self.runs_dir, limit=8)
+            self._run_history_by_label = {}
+            if not runs:
+                self.gui.add_markdown("No saved runs yet. Simulate to create one.")
+                return
+            labels = self._unique_run_history_labels(runs)
+            for label, run in zip(labels, runs, strict=True):
+                self._run_history_by_label[label] = run
+            dropdown = self.gui.add_dropdown("Run", labels, initial_value=labels[0])
+            restore_button = self.gui.add_button("Restore design", icon="download")
+            replay_button = self.gui.add_button("Replay", icon="player-play")
+
+            restore_button.on_click(lambda _event: self._restore_run(dropdown.value))
+            replay_button.on_click(lambda _event: self._replay_run(dropdown.value))
+
+    @staticmethod
+    def _run_history_label(run: RunSummary) -> str:
+        age = max(0.0, time.time() - run.saved_at)
+        if age < 60:
+            when = f"{int(age)}s ago"
+        elif age < 3600:
+            when = f"{int(age / 60)}m ago"
+        else:
+            when = f"{age / 3600:.1f}h ago"
+        return f"{run.creature_name} · {run.task_name} · score {run.score:.3f} · {when}"
+
+    @staticmethod
+    def _unique_run_history_labels(runs: list[RunSummary]) -> list[str]:
+        """Dropdown option values must be unique - Viser's underlying Mantine Select
+        throws (crashing the whole editor GUI, not just the dropdown) if two options
+        share a value. Two runs of the same creature/task easily produce an identical
+        base label (same score, and 'time ago' is rounded to whole seconds/minutes/
+        tenths of an hour) - e.g. simply re-running the same example twice. Disambiguate
+        with the run id, but only for labels that actually collide, so the common case
+        stays clean."""
+        base_labels = [BuildControls._run_history_label(run) for run in runs]
+        counts = Counter(base_labels)
+        return [
+            label if counts[label] == 1 else f"{label} · {run.run_id}"
+            for label, run in zip(base_labels, runs, strict=True)
+        ]
+
+    def _restore_run(self, label: str) -> None:
+        run = self._run_history_by_label.get(label)
+        if run is None:
+            return
+        self._safe(
+            lambda: self.session.restore_from_run(
+                run.run_dir / "creature.json", run.run_dir / "task.json"
+            ),
+            rebuild_body=True,
+            rebuild_part=True,
+            rebuild_motion=True,
+            rebuild_task=True,
+        )
+
+    def _replay_run(self, label: str) -> None:
+        run = self._run_history_by_label.get(label)
+        if run is None:
+            return
+        try:
+            trace = load_trace(run.run_dir)
+        except Exception as exc:
+            self.session.last_message = f"Could not load trace: {exc}"
+            self._update_status()
+            return
+        self._last_trace = trace
+        self.playback.load(trace)
+        first = self.playback.current_frame()
+        if first is not None:
+            self.on_playback_frame(first)
+        self.session.last_message = f"Loaded replay of run {run.run_id}"
+        self._rebuild_playback_controls()
+        self._rebuild_metrics_controls()
+        self._update_status()
+
+    # -- onboarding ---------------------------------------------------------------
+
+    #: Reserved for presets whose curated behavior cannot yet serve a movement goal.
+    #: The 12-DOF humanoid left this set after gaining its measured walking setup.
+    def _build_onboarding_panel(self) -> None:
+        """First-run creature x goal picker, rendered inline (not as a modal).
+
+        See ``_build`` for why this must not be a modal. Start applies the choice
+        and removes the panel; Skip just removes it - both leave a normal editor.
+        """
+        creature_labels = presets.preset_labels()
+        goal_labels = presets.onboarding_goal_labels()
+        self._onboarding_folder = self.gui.add_folder("Get started", expand_by_default=True)
+        with self._onboarding_folder:
+            self.gui.add_markdown(
+                "Pick a creature and a goal to get started. You can change everything "
+                "later — this just picks a reasonable starting point."
+            )
+            creature_dropdown = self.gui.add_dropdown(
+                "Creature", creature_labels, initial_value=creature_labels[0]
+            )
+            goal_dropdown = self.gui.add_dropdown("Goal", goal_labels, initial_value=goal_labels[0])
+            start_button = self.gui.add_button("Start", icon="player-play", color="blue")
+            skip_button = self.gui.add_button("Skip")
+
+            def _start(_event: Any) -> None:
+                creature_key = presets.preset_name_from_label(creature_dropdown.value)
+                goal_key = presets.onboarding_goal_key_from_label(goal_dropdown.value)
+                self._remove_folder("_onboarding_folder")
+                self._safe(
+                    lambda: self.session.apply_onboarding(creature_key, goal_key),
+                    rebuild_body=True,
+                    rebuild_part=True,
+                    rebuild_motion=True,
+                    rebuild_task=True,
+                )
+
+            start_button.on_click(_start)
+            skip_button.on_click(lambda _event: self._remove_folder("_onboarding_folder"))
+
+    # -- history / snapshots / destructive confirmations ------------------------
+
+    def _refresh_restore_options(self) -> None:
+        if self._restore_dropdown is not None:
+            self._restore_dropdown.options = ["(none)", *self.session.snapshot_names()]
+
+    def _restore_selected_snapshot(self) -> None:
+        if self._restore_dropdown is None:
+            return
+        name = self._restore_dropdown.value
+        if name and name != "(none)":
+            self._history_action(lambda: self.session.restore_snapshot(name))
+
+    def _confirm_delete(self) -> None:
+        impact = self.session.describe_delete_impact()
+        if not impact:
+            self.session.last_message = "Root part cannot be deleted."
+            self._update_status()
+            return
+        part = self.session.selected_part_id
+        children = [pid for pid in impact if pid != part]
+        with self.gui.add_modal("Delete part?") as modal:
+            if children:
+                self.gui.add_markdown(
+                    f"Delete **{part}** and its {len(children)} child part(s)?\n\n"
+                    f"`{', '.join(children)}`"
+                )
+            else:
+                self.gui.add_markdown(f"Delete **{part}**?")
+            confirm = self.gui.add_button("Delete", icon="trash", color="red")
+            cancel = self.gui.add_button("Cancel")
+
+            def _do(_event: Any) -> None:
+                modal.close()
+                self._safe(
+                    self.session.delete_selected_part,
+                    rebuild_body=False,
+                    rebuild_part=True,
+                    rebuild_motion=True,
+                    rebuild_task=False,
+                )
+
+            confirm.on_click(_do)
+            cancel.on_click(lambda _event: modal.close())
+
+    def _confirm_reload(self) -> None:
+        if not self.session.is_dirty:
+            self._safe(
+                self.session.reload_project,
+                rebuild_body=True,
+                rebuild_part=True,
+                rebuild_motion=True,
+                rebuild_task=True,
+            )
+            return
+        with self.gui.add_modal("Reload from disk?") as modal:
+            self.gui.add_markdown(
+                "You have unsaved edits. Reloading discards them and cannot be undone."
+            )
+            confirm = self.gui.add_button("Discard and reload", icon="refresh-dot", color="red")
+            cancel = self.gui.add_button("Cancel")
+
+            def _do(_event: Any) -> None:
+                modal.close()
+                self._safe(
+                    self.session.reload_project,
+                    rebuild_body=True,
+                    rebuild_part=True,
+                    rebuild_motion=True,
+                    rebuild_task=True,
+                )
+
+            confirm.on_click(_do)
+            cancel.on_click(lambda _event: modal.close())
+
+    def _confirm_overwrite_project(self) -> None:
+        with self.gui.add_modal("Overwrite project files?") as modal:
+            self.gui.add_markdown(
+                "This replaces external creature/task edits with the version currently "
+                "shown in the editor."
+            )
+            confirm = self.gui.add_button("Overwrite files", icon="device-floppy", color="red")
+            cancel = self.gui.add_button("Cancel")
+
+            def _do(_event: Any) -> None:
+                modal.close()
+                self._safe(
+                    self.session.overwrite_project,
+                    rebuild_body=False,
+                    rebuild_part=False,
+                    rebuild_motion=False,
+                    rebuild_task=False,
+                    preview="none",
+                )
+
+            confirm.on_click(_do)
+            cancel.on_click(lambda _event: modal.close())
+
+    # -- status -----------------------------------------------------------------
 
     def _update_status(self) -> None:
         status = self.session.status()
@@ -668,13 +1519,14 @@ class BuildControls:
         lines = []
         if self.session.external_change_pending:
             lines.append(
-                "**Files changed on disk.** Click **Reload from disk** to load them, or "
-                "make an edit here to overwrite them with your in-memory version."
+                "**Files changed on disk.** Reload them, or explicitly click "
+                "**Overwrite disk with editor**. Autosave is paused to prevent data loss."
             )
             lines.append("")
+        dirty = " · unsaved changes" if self.session.is_dirty else ""
         lines.extend(
             [
-                f"**{self.session.last_message}**",
+                f"**{self.session.last_message}**{dirty}",
                 "",
                 f"- Creature: `{self.session.creature.name}`",
                 "- Parts/joints/motors: "
@@ -694,4 +1546,8 @@ class BuildControls:
         if self._message is not None:
             self._message.content = "\n".join(lines)
         if self._simulate_button is not None:
-            self._simulate_button.disabled = not status.ok
+            self._simulate_button.disabled = not status.ok or self.job_manager.is_running
+        if self._undo_button is not None:
+            self._undo_button.disabled = not self.session.can_undo
+        if self._redo_button is not None:
+            self._redo_button.disabled = not self.session.can_redo

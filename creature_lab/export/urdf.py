@@ -122,12 +122,15 @@ def export_urdf(creature: CreatureSpec, *, robot_name: str | None = None) -> str
         if is_hinge:
             ET.SubElement(element, "axis", xyz=_vec(joint.axis))
             lower, upper = joint.limit if joint.limit else (-math.pi, math.pi)
+            motor = next(
+                (candidate for candidate in creature.motors if candidate.joint == joint.id), None
+            )
             ET.SubElement(
                 element,
                 "limit",
                 lower=_num(lower),
                 upper=_num(upper),
-                effort=_num(_DEFAULT_EFFORT),
+                effort=_num(motor.max_force if motor and motor.max_force else _DEFAULT_EFFORT),
                 velocity=_num(_DEFAULT_VELOCITY),
             )
 

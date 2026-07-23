@@ -14,8 +14,10 @@ from dataclasses import dataclass
 
 from creature_lab.schema import CreatureSpec, TaskSpec
 
-#: (creature, task) -> (score, fell)
-EvaluateFn = Callable[[CreatureSpec, TaskSpec], tuple[float, bool]]
+#: ``(creature, task) -> (score, fell)`` for legacy survival sweeps, or
+#: ``(score, fell, succeeded)`` when a task/profile supplies a real success
+#: predicate. The latter prevents "did not fall" from being reported as "won".
+EvaluateFn = Callable[[CreatureSpec, TaskSpec], tuple[float, bool] | tuple[float, bool, bool]]
 
 
 @dataclass(frozen=True)
@@ -25,6 +27,7 @@ class RobustnessTrial:
     fell: bool
     mass_scale: float
     friction_scale: float
+    succeeded: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -76,20 +79,50 @@ def run_trials(
     seed: int = 0,
     mass_jitter: float = 0.05,
     friction_jitter: float = 0.05,
+    on_trial: Callable[[int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> RobustnessResult:
-    """Evaluate ``trials`` deterministically perturbed variants and summarize scores."""
+    """Evaluate ``trials`` deterministically perturbed variants and summarize scores.
+
+    ``on_trial(completed, total)`` is called after each trial finishes, so a caller
+    running this in a background thread can report progress. ``should_stop()`` is
+    checked before each trial; if it returns true, the sweep stops early and
+    summarizes whatever trials completed (used for cooperative cancellation - see
+    ``creature_lab.editor.jobs``). Both are no-ops by default, so existing callers are
+    unaffected.
+    """
     if trials < 1:
         raise ValueError("trials must be at least 1")
 
     results: list[RobustnessTrial] = []
     for i in range(trials):
+        if should_stop is not None and should_stop():
+            break
         trial_seed = seed + i
         perturbed_creature, perturbed_task, mass_scale, friction_scale = perturb(
             creature, task, trial_seed, mass_jitter=mass_jitter, friction_jitter=friction_jitter
         )
-        score, fell = evaluate(perturbed_creature, perturbed_task)
-        results.append(RobustnessTrial(trial_seed, score, fell, mass_scale, friction_scale))
+        evaluation = evaluate(perturbed_creature, perturbed_task)
+        if len(evaluation) == 2:
+            score, fell = evaluation
+            succeeded = not fell
+        else:
+            score, fell, succeeded = evaluation
+        results.append(
+            RobustnessTrial(
+                trial_seed,
+                score,
+                fell,
+                mass_scale,
+                friction_scale,
+                succeeded=succeeded,
+            )
+        )
+        if on_trial is not None:
+            on_trial(len(results), trials)
 
+    if not results:
+        raise ValueError("no trials completed")
     scores = [trial.score for trial in results]
     return RobustnessResult(
         trials=results,
@@ -97,5 +130,30 @@ def run_trials(
         std_score=statistics.pstdev(scores) if len(scores) > 1 else 0.0,
         min_score=min(scores),
         max_score=max(scores),
-        fail_rate=sum(trial.fell for trial in results) / len(results),
+        fail_rate=sum(not bool(trial.succeeded) for trial in results) / len(results),
     )
+
+
+#: Beginner-facing trial-count presets. Mass/friction jitter stay at the ``run_trials``
+#: defaults for these; Advanced mode exposes the raw jitter sliders directly instead.
+ROBUSTNESS_LEVELS: dict[str, int] = {"Quick": 5, "Standard": 10, "Thorough": 25}
+
+
+def plain_language_verdict(result: RobustnessResult) -> str:
+    """One-sentence, non-technical read of a robustness sweep's outcome."""
+    trials = len(result.trials)
+    passed = sum(
+        (not trial.fell) if trial.succeeded is None else trial.succeeded for trial in result.trials
+    )
+    spread = (
+        result.std_score / abs(result.mean_score) if result.mean_score not in (0.0, -0.0) else 0.0
+    )
+    detail = (
+        f"met the evaluation criterion in {passed} of {trials} trials, "
+        f"with scores varying by about {spread:.0%}."
+    )
+    if result.fail_rate == 0.0 and spread < 0.1:
+        return f"Robust — {detail}"
+    if result.fail_rate <= 0.2 and spread < 0.25:
+        return f"Moderately robust — {detail}"
+    return f"Fragile — {detail}"

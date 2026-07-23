@@ -52,10 +52,13 @@ The root part is the only part that is not the child of any joint. Creature Lab 
 Each motor references one known joint:
 
 ```json
-{"joint": "hip_fl", "type": "sinusoid", "amplitude": 0.7, "frequency": 2.0, "phase": 0.0}
+{"joint": "hip_fl", "type": "sinusoid", "amplitude": 0.7, "frequency": 2.0, "phase": 0.0, "offset": 0.1, "max_force": 20.0}
 ```
 
 Creature Lab rejects motors that reference unknown joints or duplicate the same joint.
+`offset` is the center angle around which the sinusoid moves. `max_force` is an optional
+position-servo torque limit in N·m; when omitted, the backend's small-creature default is used.
+Human-scale bodies should declare it explicitly—the packaged 60 kg humanoid uses 160 N·m.
 
 ## Common Validation Failures
 

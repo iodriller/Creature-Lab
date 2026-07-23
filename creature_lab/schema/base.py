@@ -26,4 +26,8 @@ Quaternion = tuple[float, float, float, float]
 class StrictModel(BaseModel):
     """Base model that rejects unknown fields."""
 
-    model_config = ConfigDict(extra="forbid")
+    # JSON numbers such as ``1e309`` are decoded as infinity by Python's JSON
+    # parser.  Physics, step counts, hashes, and reports all require finite values,
+    # so reject NaN/Infinity once at the durable-artifact boundary rather than
+    # letting them fail later with backend-specific errors.
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)

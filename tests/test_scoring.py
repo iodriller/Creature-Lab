@@ -15,12 +15,9 @@ def test_components_sum_to_episode_score():
     )
     kwargs = dict(forward_distance=1.0, target_progress=0.5, energy=10.0, fallen=True)
     components = score_components(reward, **kwargs)
-    assert set(components) == {"forward", "target", "energy", "fall", "total"}
+    assert set(components) == {"forward", "target", "energy", "fall", "survival", "total"}
     assert components["total"] == episode_score(reward, **kwargs)
-    assert (
-        components["forward"] + components["target"] + components["energy"] + components["fall"]
-        == components["total"]
-    )
+    assert sum(v for k, v in components.items() if k != "total") == components["total"]
 
 
 def test_target_progress_is_rewarded():
@@ -43,6 +40,23 @@ def test_fall_penalty_applies_only_when_fallen():
     fallen = episode_score(reward, forward_distance=1.0, fallen=True)
     assert standing == 1.0
     assert fallen == 1.0 - 5.0
+
+
+def test_survival_rewards_staying_upright_and_nothing_else():
+    """The mirror image of fall_penalty: a reward built only from survival +
+    fall_penalty must be able to score positive when the creature stays up -
+    otherwise a 'stay balanced' task can never be won (see docs/KNOWN_ISSUES.md)."""
+    reward = RewardSpec(forward_distance=0.0, survival=1.0, fall_penalty=0.5)
+    upright = episode_score(reward, forward_distance=0.0, fallen=False)
+    fell = episode_score(reward, forward_distance=0.0, fallen=True)
+    assert upright == 1.0
+    assert fell == -0.5
+    assert upright > 0 > fell
+
+
+def test_survival_is_zero_when_unset():
+    reward = RewardSpec(forward_distance=1.0)
+    assert episode_score(reward, forward_distance=0.0, fallen=False) == 0.0
 
 
 def test_all_terms_combine():

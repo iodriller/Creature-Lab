@@ -43,12 +43,15 @@ def part_color_255(part: PartSpec) -> tuple[int, int, int]:
 def _add_part(scene: Any, name: str, part: PartSpec) -> Any:
     color = part_color_255(part)
     if part.shape == ShapeType.BOX:
-        assert part.size is not None
+        if part.size is None:
+            raise ValueError("box part is missing size")
         return scene.add_box(name, color=color, dimensions=tuple(part.size))
     if part.shape == ShapeType.SPHERE:
-        assert part.radius is not None
+        if part.radius is None:
+            raise ValueError("sphere part is missing radius")
         return scene.add_icosphere(name, radius=part.radius, color=color)
-    assert part.radius is not None and part.length is not None
+    if part.radius is None or part.length is None:
+        raise ValueError("capsule/cylinder part is missing radius or length")
     if part.shape == ShapeType.CYLINDER:
         # Native Viser cylinder, along the local z axis (matches the schema/backend).
         return scene.add_cylinder(name, radius=part.radius, height=part.length, color=color)

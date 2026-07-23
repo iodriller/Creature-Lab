@@ -4,13 +4,14 @@ import pytest
 from typer.testing import CliRunner
 
 from creature_lab.cli import app
-from creature_lab.schema import CreatureSpec, TaskSpec
+from creature_lab.schema import ControllerSpec, CreatureSpec, TaskSpec
 from creature_lab.zoo import (
     default_task_name,
     list_zoo_creatures,
     validate_all,
     zoo_baseline,
     zoo_creature,
+    zoo_optimized_controller,
     zoo_tasks,
 )
 
@@ -108,3 +109,59 @@ def test_zoo_run_cli_saves_trace(tmp_path):
     assert len(run_dirs) == 1
     trace = EpisodeTrace.model_validate_json((run_dirs[0] / "trace.json").read_text())
     assert trace.creature_name == "worm"
+
+
+# -- packaged optimized gaits ------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["quadruped", "hexapod", "tripod", "worm"])
+def test_locomotion_creatures_ship_a_valid_optimized_controller(name):
+    from creature_lab.schema import ControllerSpec
+
+    path = zoo_optimized_controller(name)
+    assert path is not None and path.exists()
+    spec = ControllerSpec.model_validate_json(path.read_text())
+    assert spec.type.value == "sinusoid"
+    creature, _ = zoo_creature(name)
+    assert {m.joint for m in spec.motors} == {m.joint for m in creature.motors}
+
+
+def test_only_walking_humanoid_ships_a_measured_controller():
+    # The 8-DOF body remains a balance exercise. The 12-DOF body has horizontal
+    # feet, scaled actuators, and a gait accepted by the executable showcase.
+    assert zoo_optimized_controller("humanoid_minimal") is None
+    path = zoo_optimized_controller("humanoid_12dof")
+    assert path is not None and path.exists()
+    spec = ControllerSpec.model_validate_json(path.read_text())
+    assert spec.type.value == "sinusoid"
+
+
+def test_zoo_run_curated_default_uses_the_optimized_gait():
+    pytest.importorskip("pybullet")
+    curated = runner.invoke(app, ["zoo", "run", "quadruped", "--json"])
+    optimized = runner.invoke(
+        app, ["zoo", "run", "quadruped", "--controller", "optimized", "--json"]
+    )
+    baseline = runner.invoke(app, ["zoo", "run", "quadruped", "--controller", "sinusoid", "--json"])
+    assert curated.exit_code == 0, curated.stdout
+    assert optimized.exit_code == 0, optimized.stdout
+    assert baseline.exit_code == 0, baseline.stdout
+
+    import json
+
+    curated_score = json.loads(curated.stdout)["score"]
+    assert curated_score == pytest.approx(json.loads(optimized.stdout)["score"])
+    assert curated_score > json.loads(baseline.stdout)["score"]
+
+
+def test_zoo_run_optimized_controller_errors_cleanly_when_none_packaged():
+    pytest.importorskip("pybullet")
+    result = runner.invoke(app, ["zoo", "run", "humanoid_minimal", "--controller", "optimized"])
+    assert result.exit_code != 0
+    assert "no optimized controller" in result.stdout.lower()
+
+
+def test_zoo_list_shows_optimized_gait_column():
+    result = runner.invoke(app, ["zoo", "list"])
+    assert result.exit_code == 0, result.stdout
+    assert "optimized gait" in result.stdout

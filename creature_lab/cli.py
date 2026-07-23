@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import random
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Annotated, Any, TypeVar
 from xml.etree.ElementTree import ParseError as ET_PARSE_ERROR
@@ -14,7 +14,8 @@ from pydantic import BaseModel, ValidationError
 from rich.console import Console
 from rich.table import Table
 
-from creature_lab import VERSION
+from creature_lab import VERSION, qualification
+from creature_lab.controllers.factory import extract_sinusoid_spec
 from creature_lab.controllers.sinusoid import sinusoid_targets
 from creature_lab.diagnostics import collect_doctor_checks, summarize_episode
 from creature_lab.evolve import (
@@ -26,6 +27,7 @@ from creature_lab.evolve import (
     make_mutator,
     map_elites,
 )
+from creature_lab.exporting import export_design_pack, verify_design_pack
 from creature_lab.hashing import spec_hash
 from creature_lab.library import (
     builtin_creature_names,
@@ -40,7 +42,14 @@ from creature_lab.runs import (
     resolve_trace_path,
     save_run,
 )
-from creature_lab.schema import CreatureSpec, EpisodeTrace, FrameState, TaskSpec, TraceMeta
+from creature_lab.schema import (
+    ControllerSpec,
+    CreatureSpec,
+    EpisodeTrace,
+    FrameState,
+    TaskSpec,
+    TraceMeta,
+)
 from creature_lab.schema.trace import TRACE_SCHEMA_VERSION
 from creature_lab.validation import EpisodeInputError, validate_episode_inputs
 
@@ -186,6 +195,7 @@ def _build_meta(
     seed: int | None,
     score_summary: dict[str, float],
     backend_version: str,
+    controller: str | None = None,
 ) -> TraceMeta:
     """Build the provenance/reproducibility metadata stamped into a trace."""
     return TraceMeta(
@@ -198,6 +208,7 @@ def _build_meta(
         task_hash=spec_hash(task),
         score_summary=score_summary,
         warnings=validate_episode_inputs(creature, task),
+        controller=controller,
     )
 
 
@@ -220,15 +231,80 @@ def _trace_from_frames(
     )
 
 
-def _make_controller(name: str, creature: CreatureSpec):
-    """Build an open-loop controller callable ``(t, prev_frame) -> targets`` by name."""
+def _make_controller(name: str, creature: CreatureSpec, task: TaskSpec):
+    """Build a controller callable ``(t, prev_frame) -> targets``.
+
+    ``name`` is either a built-in controller name (``sinusoid``/``cpg``/
+    ``target_seek``/``posture``) or a path to a ``controller.json`` (a portable
+    ``ControllerSpec`` - see ``creature_lab.controllers.factory.build_controller``
+    and ``creature-lab controller scaffold/extract``), detected by a ``.json`` suffix.
+
+    Reports errors via ``console.print`` + ``typer.Exit`` rather than
+    ``typer.BadParameter``: this runs deep inside ``_simulate``, not from a Typer
+    parameter callback, and Click only pretty-prints ``BadParameter`` when it is
+    raised from the latter - raised here, it would exit silently with no message.
+    """
+    if name == "curated":
+        name = _curated_controller(creature)
+    if name.lower().endswith(".json"):
+        return _make_controller_from_spec_file(Path(name), creature, task)
+    if name == "hold":
+        return lambda _t, _prev=None: {}
     if name == "sinusoid":
         return lambda t, prev=None: sinusoid_targets(creature, t)
     if name == "cpg":
         from creature_lab.controllers.cpg import CPGController
 
         return CPGController(creature)
-    raise typer.BadParameter(f"unknown controller {name!r} (choose: sinusoid, cpg)")
+    if name == "target_seek":
+        from creature_lab.controllers.target_seek import TargetSeekController
+
+        if task.target is None:
+            console.print(
+                "[red]error:[/red] controller 'target_seek' requires a task with a target "
+                "(e.g. --task examples/reach_target.json)"
+            )
+            raise typer.Exit(code=2)
+        return TargetSeekController(creature, task)
+    if name == "posture":
+        from creature_lab.controllers.posture import PostureController
+
+        return PostureController(creature)
+    console.print(
+        f"[red]error:[/red] unknown controller {name!r} (choose: sinusoid, cpg, target_seek, "
+        "posture, or a path to a controller.json)"
+    )
+    raise typer.Exit(code=2)
+
+
+def _curated_controller(creature: CreatureSpec) -> str:
+    """Best packaged first-run controller, with safe fallbacks for edited bodies."""
+    try:
+        from creature_lab.zoo import zoo_creature, zoo_optimized_controller
+
+        packaged, _task = zoo_creature(creature.name)
+        optimized = zoo_optimized_controller(creature.name)
+        if optimized is not None and spec_hash(packaged) == spec_hash(creature):
+            return str(optimized)
+    except (KeyError, OSError, ValueError):
+        pass
+    if creature.name.startswith("humanoid"):
+        return "posture"
+    return "cpg" if creature.motors else "hold"
+
+
+def _make_controller_from_spec_file(path: Path, creature: CreatureSpec, task: TaskSpec):
+    """Load a ``controller.json`` (a ``ControllerSpec``) and build the controller it
+    describes. See ``creature_lab.controllers.factory.build_controller``."""
+    from creature_lab.controllers.factory import build_controller
+    from creature_lab.schema import ControllerSpec
+
+    spec = _load_spec(path, ControllerSpec)
+    try:
+        return build_controller(spec, creature, task, base_dir=path.resolve().parent)
+    except ValueError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
 
 
 def _simulate(
@@ -239,20 +315,34 @@ def _simulate(
     seed: int | None = None,
     controller: str = "sinusoid",
     backend: str = "pybullet",
+    on_step: Callable[[int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> EpisodeTrace:
-    """Run one physics episode on the named backend and return its trace (unsaved)."""
-    policy = _make_controller(controller, creature)
+    """Run one physics episode on the named backend and return its trace (unsaved).
+
+    ``on_step(completed, total)`` and ``should_stop()`` are optional hooks for a
+    caller running this off the main thread (see ``creature_lab.editor.jobs``) to
+    report progress and cooperatively cancel between steps. Both default to no-ops,
+    so this stays a plain blocking call for every other caller.
+    """
+    resolved_controller = _curated_controller(creature) if controller == "curated" else controller
+    policy = _make_controller(resolved_controller, creature, task)
     backend_cls, version = _require_backend(backend)
     sim = backend_cls(gui=gui)
+    total_steps = task.step_count()
     try:
-        sim.build(creature, task)
+        sim.build(creature, task, seed=seed)
         frames: list[FrameState] = []
         prev: FrameState | None = None
-        for step_index in range(task.step_count()):
+        for step_index in range(total_steps):
+            if should_stop is not None and should_stop():
+                break
             t = step_index * task.timestep
-            sim.apply_motor_targets(policy(t, prev))
+            sim.apply_joint_control(policy(t, prev), mode="position")
             prev = sim.step(task.timestep)
             frames.append(prev)
+            if on_step is not None:
+                on_step(step_index + 1, total_steps)
         score_summary = sim.score_summary()
     finally:
         sim.close()
@@ -262,7 +352,12 @@ def _simulate(
         raise typer.Exit(code=1)
 
     meta = _build_meta(
-        creature, task, seed=seed, score_summary=score_summary, backend_version=version
+        creature,
+        task,
+        seed=seed,
+        score_summary=score_summary,
+        backend_version=version,
+        controller=resolved_controller,
     )
     return _trace_from_frames(creature, task, frames, meta=meta, backend=backend)
 
@@ -316,7 +411,11 @@ def run(
     creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
     task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
     controller: Annotated[
-        str, typer.Option(help="Open-loop controller: 'sinusoid' or 'cpg'.")
+        str,
+        typer.Option(
+            help="Controller: 'sinusoid', 'cpg', 'target_seek' (needs a task with a target), "
+            "'posture' (PD balance), or a path to a controller.json."
+        ),
     ] = "sinusoid",
     backend: Annotated[
         str, typer.Option(help="Physics backend: 'pybullet' or 'mujoco'.")
@@ -334,7 +433,6 @@ def run(
     creature = _load_spec(creature_path, CreatureSpec)
     task_spec = _load_spec(task, TaskSpec)
     _check_inputs(creature, task_spec)
-
     trace = _simulate(
         creature, task_spec, gui=gui, seed=seed, controller=controller, backend=backend
     )
@@ -415,16 +513,20 @@ def demo(
         raise typer.Exit(code=2) from exc
 
     backend_holder: list = []
+    demo_controller = _curated_controller(creature)
+    demo_policy = _make_controller(demo_controller, creature, task_spec)
 
     def live_frames() -> Iterator[FrameState]:
         backend = backend_cls()
         backend_holder.append(backend)
         try:
-            backend.build(creature, task_spec)
+            backend.build(creature, task_spec, seed=seed)
+            previous: FrameState | None = None
             for step_index in range(task_spec.step_count()):
-                targets = sinusoid_targets(creature, step_index * task_spec.timestep)
-                backend.apply_motor_targets(targets)
-                yield backend.step(task_spec.timestep)
+                targets = demo_policy(step_index * task_spec.timestep, previous)
+                backend.apply_joint_control(targets, mode="position")
+                previous = backend.step(task_spec.timestep)
+                yield previous
         finally:
             backend.close()
 
@@ -444,7 +546,12 @@ def demo(
     if save and frames:
         summary = backend_holder[0].score_summary() if backend_holder else {}
         meta = _build_meta(
-            creature, task_spec, seed=seed, score_summary=summary, backend_version=version
+            creature,
+            task_spec,
+            seed=seed,
+            score_summary=summary,
+            backend_version=version,
+            controller=demo_controller,
         )
         trace = _trace_from_frames(creature, task_spec, frames, meta=meta)
         run_dir = save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
@@ -487,8 +594,12 @@ def build(
         ),
     ] = None,
     controller: Annotated[
-        str, typer.Option(help="Open-loop controller for Simulate: 'sinusoid' or 'cpg'.")
-    ] = "sinusoid",
+        str,
+        typer.Option(
+            help="Controller for Simulate: 'curated' (best first-run behavior), "
+            "'sinusoid', 'cpg', 'target_seek' (needs a target), or 'posture'."
+        ),
+    ] = "curated",
     backend: Annotated[
         str, typer.Option(help="Physics backend for Simulate: 'pybullet' or 'mujoco'.")
     ] = "pybullet",
@@ -508,7 +619,7 @@ def build(
     """Open the browser build editor for presets, live tuning, validation, and simulation."""
     from creature_lab.editor import presets as editor_presets
     from creature_lab.editor.live import run_editor
-    from creature_lab.editor.session import EditorSession
+    from creature_lab.editor.session import AVAILABLE_CONTROLLERS, EditorSession
 
     if preset not in editor_presets.CREATURE_PRESETS:
         available = ", ".join(editor_presets.preset_names())
@@ -518,6 +629,16 @@ def build(
         available = ", ".join(editor_presets.task_names())
         console.print(
             f"[red]error:[/red] unknown task preset {task_preset!r}; choose one of: {available}"
+        )
+        raise typer.Exit(code=2)
+    if controller not in AVAILABLE_CONTROLLERS:
+        # The editor dropdown intentionally offers stable named controllers, so
+        # a bad --controller here would otherwise silently break the dropdown's
+        # initial value instead of failing at launch.
+        available = ", ".join(AVAILABLE_CONTROLLERS)
+        console.print(
+            f"[red]error:[/red] unknown controller {controller!r} for build; choose one of: "
+            f"{available}"
         )
         raise typer.Exit(code=2)
 
@@ -538,8 +659,16 @@ def build(
             out_path=out,
         )
     session.task_preset = task_preset if task is None else task_spec.name
+    session.controller = controller
 
-    def simulate_current(creature: CreatureSpec, task_for_run: TaskSpec) -> EpisodeTrace:
+    def simulate_current(
+        creature: CreatureSpec,
+        task_for_run: TaskSpec,
+        *,
+        controller: str = "sinusoid",
+        on_step: Callable[[int, int], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> EpisodeTrace:
         _check_inputs(creature, task_for_run)
         return _simulate(
             creature,
@@ -547,6 +676,22 @@ def build(
             seed=seed,
             controller=controller,
             backend=backend,
+            on_step=on_step,
+            should_stop=should_stop,
+        )
+
+    other_backend = "mujoco" if backend == "pybullet" else "pybullet"
+
+    def simulate_other_backend(
+        creature: CreatureSpec, task_for_run: TaskSpec, *, controller: str = "sinusoid"
+    ) -> EpisodeTrace:
+        """For the editor's Qualify panel's backend-portable check - same as
+        ``simulate_current`` but pinned to the backend the session isn't already
+        using. Kept in cli.py (not editor/live.py) since only the CLI layer knows
+        about concrete backend names; the editor treats `simulate` as opaque."""
+        _check_inputs(creature, task_for_run)
+        return _simulate(
+            creature, task_for_run, seed=seed, controller=controller, backend=other_backend
         )
 
     console.print(
@@ -555,9 +700,13 @@ def build(
     run_editor(
         session,
         simulate=simulate_current,
+        simulate_other_backend=simulate_other_backend,
         port=port,
         open_browser=open_browser,
         runs_dir=runs_dir,
+        # Only greet with the creature x goal picker on a truly fresh launch - not
+        # when the user already pointed at a specific creature or project.
+        show_onboarding=creature_path is None and project is None,
     )
 
 
@@ -577,7 +726,7 @@ def _gait_symmetry(trace: EpisodeTrace) -> float:
 def _feature_evaluate(creature: CreatureSpec, task: TaskSpec) -> Evaluation:
     """Evaluate a creature, returning its score plus a (forward, symmetry) descriptor."""
     trace = _simulate(creature, task)
-    summary = summarize_episode(trace, task)
+    summary = summarize_episode(trace, task, creature)
     return Evaluation(trace.score, (summary.forward_displacement, _gait_symmetry(trace)))
 
 
@@ -716,6 +865,212 @@ def evolve(
 
 
 @app.command(rich_help_panel="Run And Improve")
+def optimize(
+    creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
+    task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
+    attempts: Annotated[
+        int, typer.Option(help="Number of CMA-ES evaluations (higher = better, slower).")
+    ] = 80,
+    seed: Annotated[int, typer.Option(help="Random seed for reproducible optimization.")] = 0,
+    backend: Annotated[
+        str, typer.Option(help="Physics backend to evaluate on: 'pybullet' or 'mujoco'.")
+    ] = "pybullet",
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", "-o", help="Write the optimized controller.json here (else stdout)."),
+    ] = None,
+    name: Annotated[str, typer.Option(help="Name recorded in the controller.json.")] = "optimized",
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable optimization metadata.")
+    ] = False,
+) -> None:
+    """Optimize a creature's sinusoid gait and save it as a portable controller.json.
+
+    CMA-ES tunes each motor's amplitude/frequency/phase (the creature's body is never
+    touched) to maximize the task's score - the same search `evolve --strategy cmaes`
+    already does, aimed specifically at producing a reusable controller artifact
+    instead of a new creature file. Needs the 'evolve' extra (`uv sync --extra evolve`).
+    A quadruped example creature went from score 0.24 to 0.70 (2.9x) in 80 evaluations
+    (a couple of CPU-minutes) - the un-tuned default sinusoid gait leaves real
+    performance on the table for every locomotion task.
+    """
+    creature = _load_spec(creature_path, CreatureSpec)
+    task_spec = _load_spec(task, TaskSpec)
+    _check_inputs(creature, task_spec)
+    rng = random.Random(seed)
+
+    def evaluate(candidate: CreatureSpec) -> float:
+        return _simulate(candidate, task_spec, backend=backend).score
+
+    try:
+        result = cmaes(creature, evaluate, attempts=attempts, rng=rng)
+    except (RuntimeError, ValueError) as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    controller_spec = extract_sinusoid_spec(result.best, name=name)
+    seed_score = result.history[0].score
+    best_score = result.best_score
+    rendered = controller_spec.model_dump_json(indent=2, exclude_none=True)
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(rendered)
+
+    if json_output:
+        _print_json(
+            {
+                "creature": creature.name,
+                "task": task_spec.name,
+                "attempts": attempts,
+                "seed_score": seed_score,
+                "best_score": best_score,
+                "out": str(out) if out is not None else None,
+            }
+        )
+        return
+
+    if out is None:
+        # Nothing else asked for the artifact, so it goes to stdout - matches
+        # `controller scaffold`/`controller extract`'s no-destination behavior.
+        _write_stdout(rendered)
+        return
+
+    ratio = f"{best_score / seed_score:.2f}x" if seed_score > 0 else "n/a"
+    console.print(
+        f"[green]optimized[/green] {creature.name!r}: score {seed_score:.4f} -> "
+        f"{best_score:.4f} ({ratio}) -> {out}"
+    )
+
+
+@app.command(rich_help_panel="Run And Improve")
+def train(
+    creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
+    task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
+    timesteps: Annotated[int, typer.Option(help="Total PPO training timesteps.")] = 100_000,
+    seed: Annotated[int, typer.Option(help="Random seed for training and evaluation.")] = 0,
+    eval_episodes: Annotated[
+        int, typer.Option(help="Episodes to evaluate the trained policy and the baseline over.")
+    ] = 5,
+    out: Annotated[
+        Path,
+        typer.Option("--out", "-o", help="Directory to write controller.json + the policy file."),
+    ] = Path("outputs/trained_policy"),
+    name: Annotated[str, typer.Option(help="Name recorded in the controller.json.")] = "trained",
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable training metadata.")
+    ] = False,
+    overwrite: Annotated[
+        bool, typer.Option(help="Replace an existing trained-policy output directory.")
+    ] = False,
+) -> None:
+    """Train a policy to control a creature via PPO (Stable-Baselines3, over
+    CreatureEnv) and save it as a controller.json + policy file bundle.
+
+    Grand Plan Phase 5, Tier 3: a creature learning to move through closed-loop
+    reinforcement learning, rather than a hand-tuned open-loop gait (`optimize`) or
+    hand-tuned feedback (`--controller posture`). Scoped honestly: this trains a real
+    policy and reports its measured improvement over a random baseline on the same
+    task - it is a working proof, not a promise of a polished walker (real bipedal
+    walking is a research problem, not a short-training-run outcome). Needs the
+    'rl' extra (`uv sync --extra rl`).
+    """
+    try:
+        from creature_lab.rl.train import train_ppo
+    except ImportError as exc:
+        console.print(
+            "[red]error:[/red] the 'rl' extra is not installed. "
+            "Install it with `uv sync --extra rl`."
+        )
+        raise typer.Exit(code=2) from exc
+
+    creature = _load_spec(creature_path, CreatureSpec)
+    task_spec = _load_spec(task, TaskSpec)
+    _check_inputs(creature, task_spec)
+    if timesteps < 1 or eval_episodes < 1:
+        console.print("[red]error:[/red] --timesteps and --eval-episodes must be at least 1")
+        raise typer.Exit(code=2)
+    if out.exists() and any(out.iterdir()) and not overwrite:
+        console.print(f"[red]error:[/red] output directory already exists: {out}")
+        raise typer.Exit(code=2)
+
+    if not json_output:
+        console.print(
+            f"[cyan]training[/cyan] {creature.name!r} on {task_spec.name!r}: "
+            f"{timesteps} PPO timesteps (seed {seed})..."
+        )
+    result = train_ppo(
+        creature, task_spec, timesteps=timesteps, seed=seed, eval_episodes=eval_episodes
+    )
+
+    import os
+    import platform
+    import shutil
+    import tempfile
+    from importlib.metadata import version as package_version
+
+    from creature_lab.io_utils import atomic_write_text
+    from creature_lab.schema import ControllerSpec, ControllerType
+
+    policy_filename = "policy.zip"
+
+    controller_spec = ControllerSpec(
+        name=name,
+        type=ControllerType.POLICY,
+        policy_file=policy_filename,
+        observation=result.observation_spec,
+        action=result.action_spec,
+        creature_hash=spec_hash(creature),
+        task_hash=spec_hash(task_spec),
+        policy_format="stable-baselines3/PPO (trusted files only)",
+        runtime_versions={
+            "python": platform.python_version(),
+            "stable-baselines3": package_version("stable-baselines3"),
+            "torch": package_version("torch"),
+            "gymnasium": package_version("gymnasium"),
+        },
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=f".{out.name}.", dir=out.parent))
+    try:
+        result.model.save(str(stage / policy_filename))
+        atomic_write_text(
+            stage / "controller.json",
+            controller_spec.model_dump_json(indent=2, exclude_none=True),
+        )
+        if out.exists():
+            shutil.rmtree(out)
+        os.replace(stage, out)
+    except BaseException:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+
+    if json_output:
+        _print_json(
+            {
+                "creature": creature.name,
+                "task": task_spec.name,
+                "timesteps": result.timesteps,
+                "eval_episodes": result.eval_episodes,
+                "baseline_mean_return": result.baseline_mean_return,
+                "trained_mean_return": result.trained_mean_return,
+                "out": str(out),
+            }
+        )
+        return
+
+    ratio = (
+        f"{result.trained_mean_return / result.baseline_mean_return:.2f}x"
+        if result.baseline_mean_return > 0
+        else "n/a"
+    )
+    console.print(
+        f"[green]trained[/green] {creature.name!r}: random baseline mean return "
+        f"{result.baseline_mean_return:.4f} -> trained {result.trained_mean_return:.4f} "
+        f"({ratio}) -> {out}"
+    )
+
+
+@app.command(rich_help_panel="Run And Improve")
 def bench(
     zoo: Annotated[bool, typer.Option("--zoo", help="Benchmark packaged zoo creatures.")] = False,
     task: Annotated[
@@ -728,7 +1083,11 @@ def bench(
         str, typer.Option(help="Physics backend: 'pybullet' or 'mujoco'.")
     ] = "pybullet",
     controller: Annotated[
-        str, typer.Option(help="Open-loop controller: 'sinusoid' or 'cpg'.")
+        str,
+        typer.Option(
+            help="Controller: 'sinusoid', 'cpg', 'target_seek' (needs a task with a target), "
+            "'posture' (PD balance), or a path to a controller.json."
+        ),
     ] = "sinusoid",
     runs_dir: Annotated[
         Path, typer.Option(help="Directory to save benchmark runs under.")
@@ -1140,7 +1499,12 @@ def inspect(
 
     trace = _load_spec(_resolve_trace_path(path, runs_dir), EpisodeTrace)
     task = _load_task_for_trace(path, None, runs_dir)
-    summary = summarize_episode(trace, task)
+    # Best-effort: creature.json may not exist next to an arbitrary trace.json path,
+    # unlike `diagnose` (which requires it). When present it gives an accurate,
+    # reward-independent `fell` instead of one that depends on reward.fall_penalty.
+    creature_candidate = _run_dir_for(path, runs_dir=runs_dir) / "creature.json"
+    creature = _load_spec(creature_candidate, CreatureSpec) if creature_candidate.exists() else None
+    summary = summarize_episode(trace, task, creature)
     meta = trace.meta
     if json_output:
         _print_json(
@@ -1167,6 +1531,7 @@ def inspect(
     if meta is not None:
         row("schema / lab version", f"{meta.schema_version} / {meta.lab_version}")
         row("backend", meta.backend_version or "-")
+        row("controller", meta.controller or "-")
         row("creature hash", meta.creature_hash or "-")
         row("task hash", meta.task_hash or "-")
         row("timestep / seed", f"{meta.timestep} / {meta.seed}")
@@ -1465,7 +1830,11 @@ def robustness(
         "pybullet"
     ),
     controller: Annotated[
-        str, typer.Option(help="Open-loop controller: 'sinusoid' or 'cpg'.")
+        str,
+        typer.Option(
+            help="Controller: 'sinusoid', 'cpg', 'target_seek' (needs a task with a target), "
+            "'posture' (PD balance), or a path to a controller.json."
+        ),
     ] = "sinusoid",
     save: Annotated[
         bool,
@@ -1493,7 +1862,7 @@ def robustness(
 
     def evaluate(trial_creature: CreatureSpec, trial_task: TaskSpec) -> tuple[float, bool]:
         trace = _simulate(trial_creature, trial_task, backend=backend, controller=controller)
-        return trace.score, bool(summarize_episode(trace, trial_task).fell)
+        return trace.score, bool(summarize_episode(trace, trial_task, trial_creature).fell)
 
     result = run_trials(
         creature,
@@ -1556,7 +1925,11 @@ def sim2sim(
         typer.Argument(help="Path to a run directory or `latest` (needs creature.json+task.json)."),
     ],
     controller: Annotated[
-        str, typer.Option(help="Open-loop controller: 'sinusoid' or 'cpg'.")
+        str,
+        typer.Option(
+            help="Controller: 'sinusoid', 'cpg', 'target_seek' (needs a task with a target), "
+            "'posture' (PD balance), or a path to a controller.json."
+        ),
     ] = "sinusoid",
     save: Annotated[
         bool, typer.Option(help="Save a new run (trace.json + sim2sim.json) under --runs-dir.")
@@ -1624,6 +1997,228 @@ def sim2sim(
     console.print(table)
     console.print(f"score gap: {score_gap:.4f}")
     console.print(f"mean root-position divergence: {divergence:.4f} m (top-down path, per frame)")
+
+
+@app.command(rich_help_panel="Run And Improve")
+def qualify(
+    creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
+    task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
+    profile: Annotated[
+        str,
+        typer.Option(
+            help="Qualification profile: " + ", ".join(qualification.BUILTIN_PROFILES) + "."
+        ),
+    ] = "basic-locomotion",
+    controller: Annotated[
+        str,
+        typer.Option(
+            help="Controller: 'sinusoid', 'cpg', 'target_seek' (needs a task with a target), "
+            "'posture' (PD balance), or a path to a controller.json."
+        ),
+    ] = "sinusoid",
+    backend: Annotated[str, typer.Option(help="Physics backend: 'pybullet' or 'mujoco'.")] = (
+        "pybullet"
+    ),
+    check_portability: Annotated[
+        bool,
+        typer.Option(
+            help="Also run the baseline on the other backend for a portability check, even "
+            "if the profile doesn't require one (slower: one extra full episode)."
+        ),
+    ] = False,
+    seed: Annotated[int, typer.Option(help="Base seed for the robustness sweep.")] = 0,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable results.")
+    ] = False,
+) -> None:
+    """Combine a baseline run, a robustness sweep, and (optionally) a cross-backend
+    comparison into one pass/fail result with a named primary blocker.
+
+    Qualification composes existing capabilities rather than being a new isolated
+    check - see `robustness` and `sim2sim` for the pieces run standalone.
+    """
+    if profile not in qualification.BUILTIN_PROFILES:
+        available = ", ".join(qualification.BUILTIN_PROFILES)
+        console.print(f"[red]error:[/red] unknown profile {profile!r}; choose one of: {available}")
+        raise typer.Exit(code=2)
+    profile_spec = qualification.BUILTIN_PROFILES[profile]
+
+    creature = _load_spec(creature_path, CreatureSpec)
+    task_spec = _load_spec(task, TaskSpec)
+    _check_inputs(creature, task_spec)
+
+    def simulate(c: CreatureSpec, t: TaskSpec) -> EpisodeTrace:
+        return _simulate(c, t, seed=seed, controller=controller, backend=backend)
+
+    simulate_other_backend = None
+    if profile_spec.max_sim2sim_gap is not None or check_portability:
+        other_backend = "mujoco" if backend == "pybullet" else "pybullet"
+
+        def simulate_other_backend(c: CreatureSpec, t: TaskSpec) -> EpisodeTrace:
+            return _simulate(c, t, seed=seed, controller=controller, backend=other_backend)
+
+    result = qualification.qualify(
+        creature,
+        task_spec,
+        profile_spec,
+        simulate=simulate,
+        simulate_other_backend=simulate_other_backend,
+    )
+
+    if json_output:
+        _print_json(
+            {
+                "creature": creature.name,
+                "task": task_spec.name,
+                "profile": result.profile,
+                "passed": result.passed,
+                "checks": [
+                    {"name": c.name, "passed": c.passed, "detail": c.detail} for c in result.checks
+                ],
+                "primary_blocker": result.primary_blocker,
+                "recommended_next_test": result.recommended_next_test,
+            }
+        )
+        return
+
+    verdict = "[green]PASS[/green]" if result.passed else "[red]FAIL[/red]"
+    console.print(f"QUALIFICATION: {verdict}  (profile: {profile_spec.name})")
+    console.print(f"[dim]{profile_spec.description}[/dim]")
+    console.print()
+    table = Table(show_header=False)
+    table.add_column("status", width=6)
+    table.add_column("check")
+    table.add_column("detail")
+    for check in result.checks:
+        status = "[green]PASS[/green]" if check.passed else "[red]FAIL[/red]"
+        table.add_row(status, check.name, check.detail)
+    console.print(table)
+    if result.primary_blocker is not None:
+        console.print()
+        console.print(f"[yellow]Primary blocker:[/yellow] {result.primary_blocker}")
+        console.print(f"[yellow]Recommended next test:[/yellow] {result.recommended_next_test}")
+
+
+@app.command("autopsy", rich_help_panel="Run And Improve")
+def autopsy_cmd(
+    creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
+    task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
+    controller: Annotated[
+        str,
+        typer.Option(
+            help="Controller under investigation; compare it against the curated controller."
+        ),
+    ] = "sinusoid",
+    backend: Annotated[str, typer.Option(help="Primary backend: pybullet or mujoco.")] = "pybullet",
+    profile: Annotated[
+        str, typer.Option(help="Qualification profile, or 'auto' to infer it from the task.")
+    ] = "auto",
+    robustness_trials: Annotated[
+        int, typer.Option(help="Seeded mass/friction counterfactual trials.")
+    ] = 5,
+    check_portability: Annotated[
+        bool, typer.Option(help="Also compare the baseline on the other physics backend.")
+    ] = False,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", "-o", help="Report directory (default: outputs/autopsy_<run>)."),
+    ] = None,
+    runs_dir: Annotated[Path, typer.Option(help="Directory used to save the baseline run.")] = (
+        DEFAULT_RUNS_DIR
+    ),
+    overwrite: Annotated[
+        bool, typer.Option(help="Replace an existing report directory and pack.")
+    ] = False,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print the autopsy result as JSON.")
+    ] = False,
+) -> None:
+    """Explain whether a failure most likely comes from control, body/task, fragility,
+    or backend sensitivity, then emit a verified reproducible experiment pack.
+    """
+    from creature_lab.autopsy import (
+        autopsy_to_html,
+        autopsy_to_markdown,
+        infer_profile,
+        run_autopsy,
+    )
+    from creature_lab.io_utils import atomic_write_text
+
+    if robustness_trials < 1:
+        console.print("[red]error:[/red] --robustness-trials must be at least 1")
+        raise typer.Exit(code=2)
+    if out is not None and out.exists() and any(out.iterdir()) and not overwrite:
+        console.print(f"[red]error:[/red] report directory already exists: {out}")
+        raise typer.Exit(code=2)
+    creature = _load_spec(creature_path, CreatureSpec)
+    task_spec = _load_spec(task, TaskSpec)
+    _check_inputs(creature, task_spec)
+    if profile == "auto":
+        profile_spec = infer_profile(task_spec)
+    elif profile in qualification.BUILTIN_PROFILES:
+        profile_spec = qualification.BUILTIN_PROFILES[profile]
+    else:
+        console.print(
+            f"[red]error:[/red] unknown profile {profile!r}; choose auto or "
+            f"{', '.join(qualification.BUILTIN_PROFILES)}"
+        )
+        raise typer.Exit(code=2)
+
+    def simulate_selected(c: CreatureSpec, t: TaskSpec) -> EpisodeTrace:
+        return _simulate(c, t, controller=controller, backend=backend)
+
+    def simulate_reference(c: CreatureSpec, t: TaskSpec) -> EpisodeTrace:
+        return _simulate(c, t, controller="curated", backend=backend)
+
+    simulate_other = None
+    if check_portability:
+        other_backend = "mujoco" if backend == "pybullet" else "pybullet"
+
+        def simulate_other(c: CreatureSpec, t: TaskSpec) -> EpisodeTrace:
+            return _simulate(c, t, controller=controller, backend=other_backend)
+
+    result = run_autopsy(
+        creature,
+        task_spec,
+        simulate=simulate_selected,
+        simulate_reference=simulate_reference,
+        profile=profile_spec,
+        simulate_other_backend=simulate_other,
+        robustness_trials=robustness_trials,
+    )
+    run_dir = save_run(creature, result.baseline_trace, runs_dir=runs_dir, task=task_spec)
+    out_dir = out or Path("outputs") / f"autopsy_{result.baseline_trace.run_id}"
+    if out_dir.exists() and any(out_dir.iterdir()) and not overwrite:
+        console.print(f"[red]error:[/red] report directory already exists: {out_dir}")
+        raise typer.Exit(code=2)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    payload = result.to_json_dict()
+    payload["run_dir"] = str(run_dir)
+    payload["pack_dir"] = str(out_dir / "experiment_pack")
+    atomic_write_text(out_dir / "autopsy.json", json.dumps(payload, indent=2, sort_keys=True))
+    atomic_write_text(out_dir / "autopsy.md", autopsy_to_markdown(result))
+    atomic_write_text(out_dir / "autopsy.html", autopsy_to_html(result))
+    export_design_pack(
+        creature,
+        task_spec,
+        result.baseline_trace,
+        out_dir=out_dir / "experiment_pack",
+        source_dir=run_dir,
+        overwrite=overwrite,
+    )
+
+    if json_output:
+        _print_json(payload)
+        return
+    console.print(
+        f"[bold]AUTOPSY:[/bold] {result.primary_cause} "
+        f"([cyan]{result.confidence} confidence[/cyan])"
+    )
+    console.print(result.summary)
+    for item in result.evidence:
+        status = "[green]PASS[/green]" if item.passed else "[red]FAIL[/red]"
+        console.print(f"  {status} {item.name}: {item.detail}")
+    console.print(f"[green]wrote[/green] report + verified experiment pack -> {out_dir}")
 
 
 @app.command(rich_help_panel="Advanced")
@@ -1712,6 +2307,92 @@ def export(
     console.print(f"[green]exported[/green] {len(frames)} frame(s) -> {saved_path}")
 
 
+@app.command("export-pack", rich_help_panel="Replay And Debug")
+def export_pack_cmd(
+    path: Annotated[Path, typer.Argument(help="Run directory, 'latest', or a bare run id.")],
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", "-o", help="Output directory (default: outputs/<run_id>_pack)."),
+    ] = None,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory used when resolving the `latest` alias.")
+    ] = DEFAULT_RUNS_DIR,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable pack metadata.")
+    ] = False,
+    overwrite: Annotated[
+        bool, typer.Option(help="Replace an existing output pack directory.")
+    ] = False,
+) -> None:
+    """Bundle a run's creature, task, controller, and trace into a shareable directory.
+
+    The result is self-contained: `creature.json`, `task.json` (if the run has one),
+    `controller.json`, `trace.json`, and a `manifest.json` with reproducibility hashes.
+    Hand the directory to someone else, or replay it later, without depending on
+    `runs/` or anything else on this machine.
+    """
+    run_dir = _run_dir_for(path, runs_dir=runs_dir)
+    if not (run_dir / "trace.json").exists():
+        console.print(f"[red]error:[/red] no trace.json found under {run_dir}")
+        raise typer.Exit(code=2)
+    trace = _load_spec(run_dir / "trace.json", EpisodeTrace)
+    creature = _load_creature_for_trace(path, None, runs_dir)
+    task_spec = _load_task_for_trace(path, None, runs_dir)
+
+    out_dir = out if out is not None else Path("outputs") / f"{trace.run_id}_pack"
+    try:
+        manifest = export_design_pack(
+            creature,
+            task_spec,
+            trace,
+            out_dir=out_dir,
+            source_dir=run_dir,
+            overwrite=overwrite,
+        )
+    except (FileExistsError, OSError, ValueError) as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    if json_output:
+        _print_json({"out_dir": str(out_dir), **manifest.to_json_dict()})
+        return
+
+    console.print(f"[green]exported[/green] design pack -> {out_dir}")
+    console.print(f"  controller.json: {manifest.controller_note}")
+    for warning in manifest.warnings:
+        console.print(f"  [yellow]warning:[/yellow] {warning}")
+
+
+@app.command("verify-pack", rich_help_panel="Replay And Debug")
+def verify_pack_cmd(
+    path: Annotated[Path, typer.Argument(help="Directory containing a design pack.")],
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable verification results.")
+    ] = False,
+) -> None:
+    """Verify every artifact hash and schema in a design pack before using it."""
+    result = verify_design_pack(path)
+    if json_output:
+        _print_json(
+            {
+                "path": str(path),
+                "valid": result.valid,
+                "checks": result.checks,
+                "errors": result.errors,
+            }
+        )
+    else:
+        for check in result.checks:
+            console.print(f"[green]ok[/green] {check}")
+        for error in result.errors:
+            console.print(f"[red]error:[/red] {error}")
+        console.print(
+            "[green]valid design pack[/green]" if result.valid else "[red]invalid design pack[/red]"
+        )
+    if not result.valid:
+        raise typer.Exit(code=1)
+
+
 def _write_creature(creature: CreatureSpec, out: Path) -> None:
     """Serialize a creature to JSON and report part/joint/motor counts."""
     out.write_text(creature.model_dump_json(indent=2, exclude_none=True))
@@ -1758,6 +2439,160 @@ def schema_trace(
 ) -> None:
     """Export the EpisodeTrace JSON Schema."""
     _write_schema(EpisodeTrace, out)
+
+
+@schema_app.command("controller")
+def schema_controller(
+    out: Annotated[Path | None, typer.Option("--out", "-o", help="Write schema JSON here.")] = None,
+) -> None:
+    """Export the ControllerSpec JSON Schema."""
+    _write_schema(ControllerSpec, out)
+
+
+controller_app = typer.Typer(help="Author and validate portable controller.json files.")
+app.add_typer(controller_app, name="controller", rich_help_panel="Run And Improve")
+
+#: Default field values for a scaffolded controller.json, matching CPGController's,
+#: TargetSeekController's, and PostureController's own constructor defaults - so a
+#: scaffolded file behaves identically to the bare `--controller cpg`/`target_seek`/
+#: `posture` name until edited.
+_CONTROLLER_DEFAULTS: dict[str, dict[str, float]] = {
+    "cpg": {"amplitude": 0.8, "frequency": 1.5, "phase_lag": 2.0, "coupling": 6.0},
+    "target_seek": {"turn_gain": 1.2, "max_turn_scale": 0.8, "slow_radius": 1.0},
+    "posture": {"kp": 40.0, "kd": 0.0},
+}
+
+
+@controller_app.command("scaffold")
+def controller_scaffold(
+    controller_type: Annotated[
+        str,
+        typer.Argument(
+            help="Controller type: 'cpg', 'target_seek', or 'posture' "
+            "(see 'controller extract' for sinusoid)."
+        ),
+    ],
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", "-o", help="Write the controller.json here (else stdout)."),
+    ] = None,
+    name: Annotated[str, typer.Option(help="Name recorded in the controller.json.")] = "controller",
+) -> None:
+    """Write a starter controller.json with the type's built-in default values.
+
+    A scaffolded file behaves identically to the bare `--controller cpg`/
+    `target_seek` name until you edit its fields - it exists to give you something
+    concrete to tune instead of guessing field names from documentation.
+    """
+    from creature_lab.schema import ControllerSpec
+
+    if controller_type not in _CONTROLLER_DEFAULTS:
+        console.print(
+            f"[red]error:[/red] unknown controller type {controller_type!r}; choose one of: "
+            f"{', '.join(_CONTROLLER_DEFAULTS)} (sinusoid has no fixed defaults - "
+            "see `controller extract`)"
+        )
+        raise typer.Exit(code=2)
+    spec = ControllerSpec.model_validate(
+        {"name": name, "type": controller_type, **_CONTROLLER_DEFAULTS[controller_type]}
+    )
+    rendered = spec.model_dump_json(indent=2, exclude_none=True)
+    if out is None:
+        _write_stdout(rendered)
+        return
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(rendered)
+    console.print(f"[green]wrote[/green] {controller_type} controller -> {out}")
+
+
+@controller_app.command("extract")
+def controller_extract(
+    creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", "-o", help="Write the controller.json here (else stdout)."),
+    ] = None,
+    name: Annotated[str, typer.Option(help="Name recorded in the controller.json.")] = "controller",
+) -> None:
+    """Migrate a creature's own MotorSpec gait into an explicit sinusoid controller.json.
+
+    The result reproduces exactly what `--controller sinusoid` already does for this
+    creature - now as a standalone, shareable artifact instead of implicit behavior.
+    """
+    from creature_lab.controllers.factory import extract_sinusoid_spec
+
+    creature = _load_spec(creature_path, CreatureSpec)
+    try:
+        spec = extract_sinusoid_spec(creature, name=name)
+    except ValueError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    rendered = spec.model_dump_json(indent=2, exclude_none=True)
+    if out is None:
+        _write_stdout(rendered)
+        return
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(rendered)
+    console.print(
+        f"[green]wrote[/green] sinusoid controller extracted from {creature.name!r} -> {out}"
+    )
+
+
+@controller_app.command("validate")
+def controller_validate(
+    controller_path: Annotated[Path, typer.Argument(help="Path to a controller.json.")],
+    creature_path: Annotated[
+        Path, typer.Option("--creature", help="CreatureSpec JSON to check compatibility against.")
+    ],
+    task_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--task", help="TaskSpec JSON (required to validate a target_seek controller)."
+        ),
+    ] = None,
+) -> None:
+    """Validate a controller.json's schema, and that it can actually drive this creature/task."""
+    from creature_lab.controllers.factory import build_controller
+    from creature_lab.schema import ControllerSpec, ControllerType
+
+    spec = _load_spec(controller_path, ControllerSpec)
+    creature = _load_spec(creature_path, CreatureSpec)
+    task_spec = _load_spec(task_path, TaskSpec) if task_path is not None else None
+
+    if spec.type == ControllerType.SINUSOID:
+        if spec.motors is None:
+            console.print("[red]error:[/red] sinusoid controller has no motor gait")
+            raise typer.Exit(code=1)
+        hinge_joints = {joint.id for joint in creature.joints if joint.type.value == "hinge"}
+        spec_joints = {motor.joint for motor in spec.motors}
+        missing = spec_joints - hinge_joints
+        if missing:
+            console.print(
+                f"[red]error:[/red] controller joints are not hinges on {creature.name!r}: "
+                f"{', '.join(sorted(missing))}"
+            )
+            raise typer.Exit(code=1)
+
+    try:
+        build_controller(spec, creature, task_spec, base_dir=controller_path.resolve().parent)
+    except ValueError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if spec.type == ControllerType.POLICY:
+        console.print(
+            "[yellow]security:[/yellow] policy payloads may deserialize Python objects; "
+            "load only files you trust"
+        )
+        if spec.observation is None or spec.action is None:
+            console.print(
+                "[yellow]warning:[/yellow] legacy policy has no explicit observation/action ABI"
+            )
+
+    console.print(
+        f"[green]valid[/green] controller {spec.name!r} ({spec.type.value}) "
+        f"for creature {creature.name!r}"
+    )
 
 
 gallery_app = typer.Typer(help="Build static zoo gallery files.")
@@ -1901,7 +2736,7 @@ def scaffold_hexapod(
 @scaffold_app.command("humanoid")
 def scaffold_humanoid(
     out: Annotated[Path, typer.Option("--out", "-o", help="Output CreatureSpec path.")],
-    dof: Annotated[int, typer.Option(help="Actuated hinges: 8 or 12.")] = 8,
+    dof: Annotated[int, typer.Option(help="Actuated hinges: 8 or 12.")] = 12,
     height: Annotated[float, typer.Option(help="Approximate standing height (m).")] = 1.6,
 ) -> None:
     """Scaffold a bipedal humanoid skeleton."""
@@ -1936,6 +2771,77 @@ def mirror_limb_cmd(
 zoo_app = typer.Typer(help="Browse and run the curated Creature Zoo.")
 app.add_typer(zoo_app, name="zoo", rich_help_panel="Start Here")
 
+failure_app = typer.Typer(
+    help="Explore intentionally broken experiments and their expected causes."
+)
+app.add_typer(failure_app, name="failure", rich_help_panel="Start Here")
+
+
+@failure_app.command("list")
+def failure_list(
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable Failure Zoo metadata.")
+    ] = False,
+) -> None:
+    """List curated failures used for learning and diagnostic regression."""
+    from creature_lab.failure_zoo import list_failure_cases
+
+    cases = list_failure_cases()
+    if json_output:
+        _print_json([case.__dict__ for case in cases])
+        return
+    table = Table(title="Creature Lab Failure Zoo")
+    table.add_column("id")
+    table.add_column("expected cause")
+    table.add_column("lesson")
+    for case in cases:
+        table.add_row(case.id, case.expected_cause, case.description)
+    console.print(table)
+
+
+@failure_app.command("export")
+def failure_export(
+    case_id: Annotated[str, typer.Argument(help="Failure case id (see `failure list`).")],
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output experiment directory.")],
+    overwrite: Annotated[
+        bool, typer.Option(help="Replace known files in the output directory.")
+    ] = (False),
+) -> None:
+    """Export an intentionally broken creature/task/controller experiment."""
+    from creature_lab.failure_zoo import build_failure_case
+    from creature_lab.io_utils import atomic_write_text
+
+    try:
+        creature, task_spec, controller_spec, case = build_failure_case(case_id)
+    except KeyError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+    if out.exists() and any(out.iterdir()) and not overwrite:
+        console.print(f"[red]error:[/red] output directory already exists: {out}")
+        raise typer.Exit(code=2)
+    out.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(out / "creature.json", creature.model_dump_json(indent=2))
+    atomic_write_text(out / "task.json", task_spec.model_dump_json(indent=2))
+    atomic_write_text(
+        out / "controller.json", controller_spec.model_dump_json(indent=2, exclude_none=True)
+    )
+    expected = {
+        "id": case.id,
+        "title": case.title,
+        "expected_cause": case.expected_cause,
+        "description": case.description,
+        "next_command": (
+            "creature-lab autopsy creature.json --task task.json --controller controller.json"
+        ),
+    }
+    atomic_write_text(out / "expected.json", json.dumps(expected, indent=2, sort_keys=True))
+    atomic_write_text(
+        out / "README.md",
+        f"# {case.title}\n\n{case.description}\n\nExpected autopsy cause: "
+        f"`{case.expected_cause}`.\n\n```bash\n{expected['next_command']}\n```\n",
+    )
+    console.print(f"[green]exported[/green] failure case {case.id!r} -> {out}")
+
 
 @zoo_app.command("list")
 def zoo_list(
@@ -1944,7 +2850,13 @@ def zoo_list(
     ] = False,
 ) -> None:
     """List the built-in zoo creatures and their tasks."""
-    from creature_lab.zoo import default_task_name, list_zoo_creatures, zoo_tasks
+    from creature_lab.zoo import (
+        default_task_name,
+        list_zoo_creatures,
+        zoo_optimized_controller,
+        zoo_showcase,
+        zoo_tasks,
+    )
 
     if json_output:
         _print_json(
@@ -1953,6 +2865,10 @@ def zoo_list(
                     "creature": name,
                     "tasks": zoo_tasks(name),
                     "default_task": default_task_name(name),
+                    "has_optimized_controller": zoo_optimized_controller(name) is not None,
+                    "status": (
+                        zoo_showcase(name).status if zoo_showcase(name) is not None else "unrated"
+                    ),
                 }
                 for name in list_zoo_creatures()
             ]
@@ -1963,10 +2879,19 @@ def zoo_list(
     table.add_column("creature")
     table.add_column("tasks")
     table.add_column("default task")
+    table.add_column("optimized gait")
+    table.add_column("status")
     for name in list_zoo_creatures():
         tasks = zoo_tasks(name)
-        table.add_row(name, ", ".join(tasks), default_task_name(name))
+        optimized = "[green]yes[/green]" if zoo_optimized_controller(name) else "-"
+        showcase = zoo_showcase(name)
+        status = showcase.status if showcase is not None else "unrated"
+        table.add_row(name, ", ".join(tasks), default_task_name(name), optimized, status)
     console.print(table)
+    console.print(
+        "[dim]'optimized gait' creatures also ship a CMA-ES-tuned controller.json - "
+        "the curated default automatically uses them; `sinusoid` remains the raw baseline.[/dim]"
+    )
 
 
 @zoo_app.command("run")
@@ -1975,6 +2900,14 @@ def zoo_run(
     task: Annotated[
         str | None, typer.Option(help="Task name for this creature (default: its crawl task).")
     ] = None,
+    controller: Annotated[
+        str,
+        typer.Option(
+            help="Controller: 'curated' (default), 'sinusoid', 'cpg', 'target_seek', a path to a "
+            "controller.json, or 'optimized' for this creature's packaged CMA-ES-tuned "
+            "gait if one is shipped (see `zoo list`)."
+        ),
+    ] = "curated",
     gui: Annotated[bool, typer.Option(help="Open a PyBullet GUI window.")] = False,
     seed: Annotated[int | None, typer.Option(help="Seed recorded in the trace metadata.")] = None,
     runs_dir: Annotated[
@@ -1985,7 +2918,7 @@ def zoo_run(
     ] = False,
 ) -> None:
     """Run a zoo creature on one of its tasks and save the trace."""
-    from creature_lab.zoo import zoo_creature
+    from creature_lab.zoo import zoo_creature, zoo_optimized_controller
 
     try:
         creature, task_spec = zoo_creature(name, task)
@@ -1993,8 +2926,18 @@ def zoo_run(
         console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(code=2) from exc
 
+    if controller == "optimized":
+        optimized_path = zoo_optimized_controller(name)
+        if optimized_path is None:
+            console.print(
+                f"[red]error:[/red] no optimized controller packaged for {name!r} "
+                "(see `zoo list` for which creatures have one)"
+            )
+            raise typer.Exit(code=2)
+        controller = str(optimized_path)
+
     _check_inputs(creature, task_spec)
-    trace = _simulate(creature, task_spec, gui=gui, seed=seed)
+    trace = _simulate(creature, task_spec, gui=gui, seed=seed, controller=controller)
     run_dir = save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
     if json_output:
         _print_json(_saved_run_payload(creature, task_spec, trace, run_dir))
@@ -2019,6 +2962,57 @@ def zoo_validate_all() -> None:
     for creature_name, task_name in pairs:
         console.print(f"[green]ok[/green] {creature_name} / {task_name}")
     console.print(f"[green]valid[/green] all {len(pairs)} zoo creature/task pair(s)")
+
+
+@zoo_app.command("check-showcases")
+def zoo_check_showcases(
+    backend: Annotated[str, typer.Option(help="Physics backend to verify.")] = "pybullet",
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable acceptance results.")
+    ] = False,
+) -> None:
+    """Run every promoted Zoo example against its measured behavioral contract."""
+    from creature_lab.diagnostics import summarize_episode
+    from creature_lab.zoo import ZOO_SHOWCASES, zoo_creature
+
+    rows: list[dict[str, object]] = []
+    for name, expectation in ZOO_SHOWCASES.items():
+        if expectation.status != "showcase":
+            continue
+        creature, task_spec = zoo_creature(name, expectation.task)
+        trace = _simulate(creature, task_spec, controller="curated", backend=backend)
+        summary = summarize_episode(trace, task_spec, creature)
+        score_ok = expectation.min_score is None or trace.score >= expectation.min_score
+        fall_ok = not expectation.require_no_fall or not bool(summary.fell)
+        rows.append(
+            {
+                "creature": name,
+                "task": expectation.task,
+                "passed": score_ok and fall_ok,
+                "score": trace.score,
+                "min_score": expectation.min_score,
+                "fell": bool(summary.fell),
+            }
+        )
+    passed = all(bool(row["passed"]) for row in rows)
+    if json_output:
+        _print_json({"backend": backend, "passed": passed, "showcases": rows})
+    else:
+        table = Table(title=f"Zoo showcase acceptance ({backend})")
+        for heading in ("creature", "task", "score", "threshold", "fell", "result"):
+            table.add_column(heading)
+        for row in rows:
+            table.add_row(
+                str(row["creature"]),
+                str(row["task"]),
+                f"{float(row['score']):.4f}",
+                str(row["min_score"]),
+                str(row["fell"]),
+                "PASS" if row["passed"] else "FAIL",
+            )
+        console.print(table)
+    if not passed:
+        raise typer.Exit(code=1)
 
 
 @app.command("export-urdf", rich_help_panel="Advanced")

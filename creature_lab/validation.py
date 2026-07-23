@@ -55,11 +55,18 @@ def validate_episode_inputs(creature: CreatureSpec, task: TaskSpec) -> list[str]
             )
 
     reward = task.reward
-    # forward/target are "go" objectives; fall_penalty is a "stay upright" objective
-    # (balance/push-recovery tasks), so it counts too.
-    if (reward.forward_distance, reward.target_distance, reward.fall_penalty) == (0.0, 0.0, 0.0):
+    # forward/target are "go" objectives; fall_penalty/survival are "stay upright"
+    # objectives (balance/push-recovery tasks), so they count too.
+    objectives = (
+        reward.forward_distance,
+        reward.target_distance,
+        reward.fall_penalty,
+        reward.survival,
+    )
+    if objectives == (0.0, 0.0, 0.0, 0.0):
         warnings.append(
-            "reward has no objective (forward_distance, target_distance, fall_penalty all 0)"
+            "reward has no objective (forward_distance, target_distance, fall_penalty, "
+            "survival all 0)"
         )
 
     if task.step_count() > _MAX_REASONABLE_STEPS:

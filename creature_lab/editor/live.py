@@ -12,15 +12,20 @@ import numpy as np
 
 from creature_lab.diagnostics import summarize_episode
 from creature_lab.editor.controls import BuildControls
+from creature_lab.editor.jobs import EditorJobManager, JobCancelled, ProgressReporter
+from creature_lab.editor.playback import EditorPlayback
 from creature_lab.editor.session import EditorSession
+from creature_lab.qualification import BUILTIN_PROFILES, QualificationResult
+from creature_lab.qualification import qualify as run_qualify
 from creature_lab.robustness import RobustnessResult, run_trials
 from creature_lab.runs import DEFAULT_RUNS_DIR, save_run
-from creature_lab.schema import CreatureSpec, EpisodeTrace, TaskSpec
+from creature_lab.schema import CreatureSpec, EpisodeTrace, FrameState, TaskSpec
 from creature_lab.viewers.viser_viewer import apply_frame, build_scene, remove_scene
 
-SimulateFn = Callable[[CreatureSpec, TaskSpec], EpisodeTrace]
-SimulateResult = tuple[str, EpisodeTrace | None]
-RobustnessRunResult = tuple[str, RobustnessResult | None]
+#: (creature, task, *, on_step=None, should_stop=None) -> EpisodeTrace. The keyword
+#: hooks are optional so any plain ``(creature, task) -> EpisodeTrace`` callable still
+#: works; only the async job wiring in this module uses them.
+SimulateFn = Callable[..., EpisodeTrace]
 
 
 class EditorPreview:
@@ -39,8 +44,17 @@ class EditorPreview:
         self.on_select = on_select
         self.on_change = on_change
         self._handles = None
+        self._editor_overlays: list[Any] = []
 
     def refresh(self) -> None:
+        """Full rebuild: tear down and recreate every part, the floor, and overlays.
+
+        Needed whenever the creature's *structure* changed (template swap, add/
+        delete/mirror limb, body-param resize, load/reload, undo/redo - any of these
+        can change part count, shape, or dimensions). Not needed for a pure selection
+        change - see ``refresh_overlays`` for the cheap path used there.
+        """
+        self._remove_overlays()
         remove_scene(self._handles)
         self._handles = build_scene(self.server, self.session.creature, self.session.task)
         for part_id, handle in self._handles.parts.items():
@@ -49,17 +63,41 @@ class EditorPreview:
         apply_frame(self._handles, frame)
         self._add_editor_overlays(frame)
 
-    def animate(self, trace: EpisodeTrace, *, fps: float = 60.0) -> None:
+    def refresh_overlays(self) -> None:
+        """Redraw only the selection gizmo/CoM/support-width overlays.
+
+        Used when the selected part changes but no geometry did (see
+        ``BuildControls``'s "light" preview mode): part meshes, the floor, and the
+        contact-marker pool are left untouched, so this is far cheaper than
+        ``refresh`` and doesn't disturb anything the client already rendered.
+        """
         if self._handles is None:
             self.refresh()
-        assert self._handles is not None
-        delay = 1.0 / fps
-        for frame in trace.frames:
+            return
+        self._remove_overlays()
+        frame = self.session.preview_frame()
+        self._add_editor_overlays(frame)
+
+    def _remove_overlays(self) -> None:
+        for extra in self._editor_overlays:
+            try:
+                extra.remove()
+            except Exception:
+                pass
+        self._editor_overlays = []
+
+    def apply_playback_frame(self, frame: FrameState) -> None:
+        """Push one trace frame to the scene without touching GUI state or the camera.
+
+        Called every tick while playback is running/scrubbing (see
+        ``BuildControls.tick``) - this must stay cheap since it can run at ~30 Hz.
+        """
+        if self._handles is not None:
             apply_frame(self._handles, frame)
-            time.sleep(delay)
 
     def _add_editor_overlays(self, frame) -> None:
-        assert self._handles is not None
+        if self._handles is None:
+            return
         selected = frame.parts.get(self.session.selected_part_id)
         if selected is not None:
             marker = self.server.scene.add_frame(
@@ -69,7 +107,7 @@ class EditorPreview:
                 origin_radius=0.025,
                 position=selected.position,
             )
-            self._handles.extras.append(marker)
+            self._editor_overlays.append(marker)
             has_parent_joint = any(
                 joint.child == self.session.selected_part_id
                 for joint in self.session.creature.joints
@@ -82,7 +120,16 @@ class EditorPreview:
                     position=selected.position,
                 )
                 gizmo.on_drag_end(lambda event: self._move_selected_anchor(event.target.position))
-                self._handles.extras.append(gizmo)
+                self._editor_overlays.append(gizmo)
+        if self.session.task.target is not None:
+            target_gizmo = self.server.scene.add_transform_controls(
+                "/editor/target_gizmo",
+                scale=0.35,
+                disable_rotations=True,
+                position=self.session.task.target.position,
+            )
+            target_gizmo.on_drag_end(lambda event: self._move_target(tuple(event.target.position)))
+            self._editor_overlays.append(target_gizmo)
         metrics = self.session.preview_metrics()
         com = self.server.scene.add_icosphere(
             "/editor/com",
@@ -90,7 +137,7 @@ class EditorPreview:
             color=(30, 220, 140),
             position=(metrics["com_x"], metrics["com_y"], metrics["com_z"]),
         )
-        self._handles.extras.append(com)
+        self._editor_overlays.append(com)
         support = metrics["support_width"]
         if support > 0:
             points = np.asarray(
@@ -103,10 +150,16 @@ class EditorPreview:
                 colors=(30, 220, 140),
                 line_width=3,
             )
-            self._handles.extras.append(line)
+            self._editor_overlays.append(line)
 
     def _move_selected_anchor(self, position: tuple[float, float, float]) -> None:
         self.session.move_selected_anchor_to(tuple(float(value) for value in position))
+        self.session.autosave()
+        self.refresh()
+        self.on_change()
+
+    def _move_target(self, position: tuple[float, float, float]) -> None:
+        self.session.set_target_position(tuple(float(value) for value in position))
         self.session.autosave()
         self.refresh()
         self.on_change()
@@ -116,11 +169,21 @@ def run_editor(
     session: EditorSession,
     *,
     simulate: SimulateFn,
+    simulate_other_backend: SimulateFn | None = None,
     port: int = 8080,
     open_browser: bool = False,
     runs_dir: Path = DEFAULT_RUNS_DIR,
+    show_onboarding: bool = False,
 ) -> None:
-    """Start the Viser build editor and block until interrupted."""
+    """Start the Viser build editor and block until interrupted.
+
+    ``show_onboarding`` opens the first-run creature x goal picker before the main
+    panel is usable; callers that already loaded a specific creature (``--project``,
+    a positional path) should leave it off. ``simulate_other_backend``, when given,
+    powers the Qualify panel's backend-portable check (see cli.py's ``build``
+    command); without it, that check is simply skipped, same as the CLI's `qualify`
+    without a second backend.
+    """
     import viser
 
     server = viser.ViserServer(port=port)
@@ -139,55 +202,162 @@ def run_editor(
 
     preview = EditorPreview(server, session, on_select=select_part, on_change=scene_changed)
 
-    def simulate_current() -> SimulateResult:
-        status = session.status()
-        if not status.ok:
-            return "Fix validation errors before simulating.", None
-        trace = simulate(session.creature, session.task)
-        run_dir = save_run(session.creature, trace, runs_dir=runs_dir, task=session.task)
-        preview.animate(trace)
-        return f"Simulated score={trace.score:.4f}; saved {run_dir}", trace
+    job_manager = EditorJobManager()
+    playback = EditorPlayback()
 
-    def run_robustness_sweep(
-        trials: int, mass_jitter: float, friction_jitter: float
-    ) -> RobustnessRunResult:
-        status = session.status()
-        if not status.ok:
-            return "Fix validation errors before running a robustness sweep.", None
+    def start_simulate_job() -> None:
+        # Snapshot now: pydantic models here are always *replaced*, never mutated in
+        # place (see EditorSession), so further edits to the live session while this
+        # job runs in the background cannot corrupt what's being simulated.
+        creature = session.creature
+        task_for_run = session.task
+        controller = session.controller
 
-        def evaluate(trial_creature: CreatureSpec, trial_task: TaskSpec) -> tuple[float, bool]:
-            trace = simulate(trial_creature, trial_task)
-            return trace.score, bool(summarize_episode(trace, trial_task).fell)
+        def work(reporter: ProgressReporter) -> tuple[EpisodeTrace, Path]:
+            def on_step(done: int, total: int) -> None:
+                reporter.report(done / total if total else 1.0, f"{done}/{total} steps")
 
-        result = run_trials(
-            session.creature,
-            session.task,
-            evaluate,
-            trials=trials,
-            mass_jitter=mass_jitter,
-            friction_jitter=friction_jitter,
-        )
-        message = (
-            f"Robustness ({trials} trials): mean={result.mean_score:.4f} "
-            f"std={result.std_score:.4f} fail_rate={result.fail_rate:.0%}"
-        )
-        return message, result
+            try:
+                trace = simulate(
+                    creature,
+                    task_for_run,
+                    controller=controller,
+                    on_step=on_step,
+                    should_stop=lambda: reporter.cancel_requested,
+                )
+            except Exception:
+                if reporter.cancel_requested:
+                    raise JobCancelled from None
+                raise
+            reporter.check_cancelled()
+            run_dir = save_run(creature, trace, runs_dir=runs_dir, task=task_for_run)
+            return trace, run_dir
+
+        if not job_manager.start(work):
+            session.last_message = "A job is already running."
+
+    def start_robustness_job(trials: int, mass_jitter: float, friction_jitter: float) -> None:
+        creature = session.creature
+        task_for_run = session.task
+        controller = session.controller
+
+        def work(reporter: ProgressReporter) -> RobustnessResult:
+            def evaluate(trial_creature: CreatureSpec, trial_task: TaskSpec) -> tuple[float, bool]:
+                trace = simulate(
+                    trial_creature,
+                    trial_task,
+                    controller=controller,
+                    should_stop=lambda: reporter.cancel_requested,
+                )
+                reporter.check_cancelled()
+                return trace.score, bool(summarize_episode(trace, trial_task, trial_creature).fell)
+
+            def on_trial(done: int, total: int) -> None:
+                reporter.report(done / total if total else 1.0, f"trial {done}/{total}")
+
+            return run_trials(
+                creature,
+                task_for_run,
+                evaluate,
+                trials=trials,
+                mass_jitter=mass_jitter,
+                friction_jitter=friction_jitter,
+                on_trial=on_trial,
+                should_stop=lambda: reporter.cancel_requested,
+            )
+
+        if not job_manager.start(work):
+            session.last_message = "A job is already running."
+
+    def start_qualify_job(profile_name: str) -> None:
+        profile_spec = BUILTIN_PROFILES.get(profile_name)
+        if profile_spec is None:
+            session.last_message = f"Unknown qualification profile {profile_name!r}."
+            return
+        creature = session.creature
+        task_for_run = session.task
+        controller = session.controller
+
+        def work(reporter: ProgressReporter) -> QualificationResult:
+            def simulate_bound(c: CreatureSpec, t: TaskSpec) -> EpisodeTrace:
+                trace = simulate(
+                    c,
+                    t,
+                    controller=controller,
+                    should_stop=lambda: reporter.cancel_requested,
+                )
+                reporter.check_cancelled()
+                return trace
+
+            simulate_other_bound = None
+            if simulate_other_backend is not None:
+
+                def simulate_other_bound(c: CreatureSpec, t: TaskSpec) -> EpisodeTrace:
+                    trace = simulate_other_backend(
+                        c,
+                        t,
+                        controller=controller,
+                        should_stop=lambda: reporter.cancel_requested,
+                    )
+                    reporter.check_cancelled()
+                    return trace
+
+            def on_trial(done: int, total: int) -> None:
+                reporter.report(done / total if total else 1.0, f"robustness trial {done}/{total}")
+
+            try:
+                result = run_qualify(
+                    creature,
+                    task_for_run,
+                    profile_spec,
+                    simulate=simulate_bound,
+                    simulate_other_backend=simulate_other_bound,
+                    on_trial=on_trial,
+                    should_stop=lambda: reporter.cancel_requested,
+                )
+            except Exception:
+                if reporter.cancel_requested:
+                    raise JobCancelled from None
+                raise
+            # A stopped-early robustness sweep still returns a QualificationResult
+            # (see qualify()'s docstring) rather than raising - but a cancelled
+            # qualification is not a meaningful pass/fail verdict, so treat it the
+            # same way start_simulate_job/start_robustness_job do.
+            reporter.check_cancelled()
+            return result
+
+        if not job_manager.start(work):
+            session.last_message = "A job is already running."
 
     controls_holder["controls"] = BuildControls(
         server.gui,
         session,
+        job_manager=job_manager,
+        playback=playback,
         on_preview=preview.refresh,
-        on_simulate=simulate_current,
-        on_robustness=run_robustness_sweep,
+        on_preview_light=preview.refresh_overlays,
+        on_start_simulate=start_simulate_job,
+        on_start_robustness=start_robustness_job,
+        on_start_qualify=start_qualify_job,
+        on_playback_frame=preview.apply_playback_frame,
+        runs_dir=runs_dir,
+        show_onboarding=show_onboarding,
     )
     preview.refresh()
 
+    last_tick = time.monotonic()
     try:
         while True:
-            time.sleep(0.25)
+            controls = controls_holder["controls"]
+            active = job_manager.is_running or playback.playing
+            time.sleep(1.0 / 30 if active else 0.25)
+            now = time.monotonic()
+            dt, last_tick = now - last_tick, now
+            controls.tick(dt)
             if session.poll_external_changes():
-                controls_holder["controls"].notify_external_change()
+                controls.notify_external_change()
     except KeyboardInterrupt:
         pass
     finally:
+        job_manager.shutdown(timeout=10.0)
         server.stop()

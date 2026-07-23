@@ -10,13 +10,16 @@ uv run creature-lab demo --open-browser
 uv run creature-lab build
 uv run creature-lab zoo list
 uv run creature-lab zoo run quadruped
+uv run creature-lab zoo check-showcases
 uv run creature-lab report latest
 ```
 
 - `demo` runs a built-in creature in the live browser viewer.
 - `build` opens the browser setup screen for visual creature editing and simulation.
-- `zoo list` shows packaged creatures and tasks.
-- `zoo run <name>` runs a packaged creature and saves a trace.
+- `zoo list` distinguishes measured showcases from intentionally difficult challenges.
+- `zoo run <name>` uses the measured `curated` controller by default and saves its exact
+  controller snapshot. Use `--controller sinusoid` for the raw teaching baseline.
+- `zoo check-showcases` runs every promoted example against score and fall thresholds.
 - `report latest` summarizes the last saved run.
 
 ## Launcher Scripts
@@ -58,22 +61,80 @@ uv run creature-lab build --preset humanoid
 uv run creature-lab build mydude.json --out mydude.json
 uv run creature-lab build --project outputs/mydude
 uv run creature-lab run examples/quadruped.json --task examples/crawl_forward.json
+uv run creature-lab run examples/quadruped.json --task examples/reach_target.json --controller target_seek
 uv run creature-lab evolve examples/quadruped.json --task examples/crawl_forward.json --attempts 20
+uv run creature-lab optimize examples/quadruped.json --task examples/crawl_forward.json --out gait.json
+uv run creature-lab train examples/quadruped.json --task examples/crawl_forward.json --out outputs/trained
 uv run creature-lab ask "make it crawl farther" examples/tripod.json --task examples/crawl_forward.json --offline
+uv run creature-lab qualify examples/quadruped.json --task examples/reach_target.json --profile target-reach
+uv run creature-lab autopsy examples/quadruped.json --task examples/crawl_forward.json --controller sinusoid
+uv run creature-lab failure list
+uv run creature-lab controller scaffold cpg --out gait.json
+uv run creature-lab controller extract examples/quadruped.json --out gait.json
+uv run creature-lab run examples/quadruped.json --task examples/crawl_forward.json --controller gait.json
 ```
 
-- `build` edits a CreatureSpec (or URDF) in a Viser browser UI: tune it, read live metrics and a
-  robustness sweep after Simulate, then save. `--project <dir>` binds it to `creature.json`/
-  `task.json` in that directory, autosaving edits and detecting external changes with a Reload
-  prompt (see `docs/BUILD_EDITOR.md`).
-- `run` simulates one creature/task pair.
-- `evolve` searches for a better body/controller. `--strategy llm` uses the validated agent
-  tool layer (offline by default) as the mutation operator instead of the structural
-  body/controller mutators; each attempt's rationale is saved into `lineage.json`
-  (`creature-lab lineage <run>` shows it).
+- `build` edits a CreatureSpec (or URDF) in a Viser browser UI: tune it, drag task targets in
+  3D, read live metrics, a
+  robustness sweep, and a qualification pass/fail after Simulate, then save. `--project <dir>`
+  binds it to `creature.json`/`task.json` in that directory, autosaving edits and detecting
+  external changes with a Reload prompt (see `docs/BUILD_EDITOR.md`).
+- `run` simulates one creature/task pair. `--controller` chooses `sinusoid` (default),
+  `cpg` (coupled-oscillator gait), `target_seek` (steers the gait toward `task.target` —
+  needs a task with one), `posture` (closed-loop PD balance — corrects forward/backward
+  lean only, does not walk toward a goal; see Known Issues for why it can't correct
+  sideways lean), or a path to a `controller.json` (a portable `ControllerSpec` — see
+  `controller` below, or `train`'s output for a `policy`-type one); also available on
+  `build`/`bench`/`robustness`/`sim2sim`/`qualify` — **not** `evolve`, see below. The editor
+  also offers `curated`, which selects a measured packaged gait or safe feedback fallback.
+- `evolve` searches for a better body/gait via `--mutate body,controller` (mutating the body's
+  own `MotorSpec` amplitude/frequency/phase — unrelated to the `--controller` flag above; evolve
+  always simulates with the default open-loop `sinusoid` policy, it has no `--controller` option).
+  `--strategy llm` uses the validated agent tool layer (offline by default) as the mutation
+  operator instead of the structural body/controller mutators; each attempt's rationale is saved
+  into `lineage.json` (`creature-lab lineage <run>` shows it).
+- `optimize` tunes a creature's gait (CMA-ES over each motor's amplitude/frequency/phase, body
+  untouched — the same search `evolve --strategy cmaes` runs) and saves the result as a portable
+  `controller.json` instead of a new creature file. The un-tuned default gait leaves real
+  performance on the table: a quadruped example went from score 0.24 to 0.70 (2.9x) in 80
+  evaluations. Every zoo locomotion creature ships a pre-optimized `controller.json` — see
+  `zoo run --controller optimized` below.
+- `train` trains a real PPO policy (Stable-Baselines3 over `CreatureEnv`) and saves it as a
+  `controller.json` + `policy.zip` bundle (`--controller <dir>/controller.json` runs it — a
+  `policy`-type `ControllerSpec` always needs its sibling `policy.zip`, so move the whole
+  directory together, not just the JSON). Needs the optional `rl` extra
+  (`uv sync --extra rl` — gymnasium, Stable-Baselines3, torch). Policy payloads may contain
+  pickle-based data, so load only policies you trust. New bundles record observation/action ABI
+  and creature/task hashes and reject incompatible dimensions. Prints the trained policy's
+  mean return against a random baseline on the same task, measured, not assumed — a 100k-timestep
+  run on the quadruped example reaches 1.5-2x the random baseline in under 2 minutes. Scoped
+  honestly: a working, measured training loop, not a promise of a polished walker — real bipedal
+  walking is a research problem. The packaged 12-DOF humanoid is a separate hand-tuned,
+  PyBullet-specific open-loop baseline; it is not evidence that PPO learned a humanoid gait.
 - `ask` applies validated design edits, offline or with an optional LLM provider. Every
   proposal now sees the current diagnosis (failure patterns + suggestions) alongside the
   score, so an online LLM can target the actual detected problem instead of guessing blind.
+- `qualify` combines a baseline run, a task-aware robustness sweep, and (for the `backend-portable`
+  profile) a cross-backend comparison into one pass/fail result with a named primary blocker
+  and a recommended next test. Built-in profiles: `basic-locomotion`, `target-reach`,
+  `push-recovery`, `backend-portable`; `target-reach` and `push-recovery` fail fast with a
+  clear "Task setup" check if the task doesn't have what the profile needs (a target, or a
+  damage/impulse event) rather than running physics first. `--json` prints a machine-readable
+  result. Also available as a **Qualify** panel in `creature-lab build`'s Test phase (see
+  `docs/BUILD_EDITOR.md`).
+- `autopsy` runs the selected-controller baseline, a curated-controller counterfactual,
+  task-aware perturbations, optional backend comparison, causal attribution, and emits
+  HTML/Markdown/JSON plus a verified pack.
+- `failure list` and `failure export <id>` expose intentionally broken experiments with an
+  expected diagnosis for teaching and regression work.
+- `controller scaffold <cpg|target_seek|posture>` writes a starter `controller.json` with that
+  controller's own built-in defaults. `controller extract <creature.json>` migrates a
+  creature's own gait (`MotorSpec` amplitude/frequency/phase/offset) into an explicit, portable
+  sinusoid `controller.json` — the same thing `--controller sinusoid` already does implicitly,
+  now a shareable file. `controller validate <controller.json> --creature <creature.json>
+  [--task <task.json>]` checks a controller.json against a specific creature/task (for a
+  sinusoid spec, warns if none of its joint ids match the creature's motors — such a spec would
+  silently drive nothing). Any `controller.json` can then be passed to `--controller` above.
 
 ## Replay And Debug
 
@@ -85,16 +146,27 @@ uv run creature-lab report latest --out report.md
 uv run creature-lab report latest --html report.html
 uv run creature-lab view runs/<run-id> --open-browser
 uv run creature-lab export latest --gif creature.gif
+uv run creature-lab export-pack latest --out outputs/my_design_pack
+uv run creature-lab verify-pack outputs/my_design_pack
 ```
 
 - `replay` prints a short trace summary.
-- `inspect` prints metadata, hashes, score components, contacts, warnings, and run metrics.
+- `inspect` prints metadata, hashes, score components, contacts, warnings, and run metrics
+  (including which controller produced the run, if known).
 - `diagnose` explains likely failure patterns and suggested edits.
 - `report` writes a Markdown or JSON summary with score, diagnostics, artifacts, and a
   reproducibility block. `--html` also writes a self-contained HTML run card (score
   breakdown, signal sparklines, root-path plot, and an optional embedded GIF preview).
 - `view` replays recorded poses in the browser viewer.
 - `export` renders a recorded trace to GIF or MP4.
+- `export-pack` bundles a run into one portable, shareable directory: `creature.json`,
+  `task.json` (if any), `controller.json`, `trace.json`, and a `manifest.json` with
+  reproducibility hashes — no dependency on `runs/` or anything else on the machine that
+  produced it. Current runs snapshot the exact controller when they are saved; learned-policy
+  packs copy the model payload as well. Older runs fall back with an explicit warning rather
+  than claiming exact reproduction. `verify-pack` checks all byte/semantic hashes, schemas,
+  bundle-contained paths, and policy presence before use. Defaults to `outputs/<run_id>_pack`
+  when `--out` is omitted. `--json` prints the manifest.
 
 Most run-reading commands accept either `runs/<run-id>`, a `trace.json` path, a bare run id
 under `runs/`, or `latest`.
@@ -103,6 +175,8 @@ under `runs/`, or `latest`.
 
 ```bash
 uv run creature-lab scaffold quadruped --out quad.json
+uv run creature-lab scaffold humanoid --out humanoid.json  # footed 12-DOF default
+uv run creature-lab scaffold humanoid --dof 8 --out footless-challenge.json
 uv run creature-lab mirror-limb half_creature.json --side left --out symmetric.json
 uv run creature-lab export-urdf quad.json --out quad.urdf
 uv run creature-lab export-mjcf quad.json --out quad.xml
@@ -141,8 +215,9 @@ environment checks. They are intentionally outside the first-run path.
 
 ## Machine-Readable Output
 
-Use `--json` on `run`, `evolve`, `ask`, `inspect`, `diagnose`, `report`, `zoo list`, and
-`zoo run` when another tool needs structured output instead of Rich tables.
+Use `--json` on `run`, `evolve`, `optimize`, `train`, `ask`, `inspect`, `diagnose`, `report`,
+`zoo list`, `zoo run`, `robustness`, `sim2sim`, `qualify`, and `export-pack` when another tool
+needs structured output instead of Rich tables.
 
 ## Optional Extras
 
@@ -151,6 +226,7 @@ Use `--json` on `run`, `evolve`, `ask`, `inspect`, `diagnose`, `report`, `zoo li
 | `sim` | PyBullet backend and physics rendering |
 | `viz` | Viser browser viewer and plotting |
 | `export` | GIF/MP4 writing |
-| `evolve` | Optional CMA-ES strategy |
+| `evolve` | `evolve --strategy cmaes` and `optimize` (both CMA-ES-based) |
+| `rl` | `train` (PPO over `CreatureEnv` via Stable-Baselines3) and loading a trained `policy` controller |
 | `mujoco` | MuJoCo backend and MJCF loading tests |
 | `llm` | Online `ask` mode through LiteLLM |

@@ -13,6 +13,7 @@ from creature_lab.schema.base import (
     Vector3,
 )
 from creature_lab.schema.control import ActionSpec, ObservationSpec
+from creature_lab.schema.controller import ControllerSpec, ControllerType, MotorGaitSpec
 from creature_lab.schema.creature import (
     CreatureSpec,
     JointSpec,
@@ -47,6 +48,8 @@ __all__ = [
     "AgentTrace",
     "ColorRGB",
     "ContactSpec",
+    "ControllerSpec",
+    "ControllerType",
     "CreatureSpec",
     "DamageEventSpec",
     "EpisodeSummary",
@@ -56,6 +59,7 @@ __all__ = [
     "JointLimit",
     "JointSpec",
     "JointType",
+    "MotorGaitSpec",
     "MotorSpec",
     "MotorType",
     "ObservationSpec",

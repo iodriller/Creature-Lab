@@ -51,6 +51,17 @@ def test_humanoid_dof_controls_complexity():
     assert len(h8.motors) == 8
     assert len(h12.motors) == 12
     assert len(h12.parts) > len(h8.parts)  # feet + hands added
+    assert sum(part.mass for part in h12.parts) == pytest.approx(60.0)
+    assert all(part.shape.value == "box" for part in h12.parts if part.id.startswith("foot_"))
+    assert all(motor.max_force == pytest.approx(160.0) for motor in h12.motors)
+
+
+def test_humanoid_default_is_the_footed_12dof_body():
+    humanoid = generate_humanoid()
+
+    assert humanoid.name == "humanoid_12dof"
+    assert len(humanoid.motors) == 12
+    assert {"foot_l", "foot_r"} <= {part.id for part in humanoid.parts}
 
 
 def test_humanoid_rejects_bad_dof():
