@@ -13,7 +13,7 @@ TRACE_SCHEMA_VERSION = "1"
 
 
 class TraceMeta(StrictModel):
-    """Provenance/reproducibility metadata for an episode (see docs/MVP_PLAN.md §5.4)."""
+    """Provenance/reproducibility metadata for an episode (see docs/archive/MVP_PLAN.md §5.4)."""
 
     schema_version: str
     lab_version: str

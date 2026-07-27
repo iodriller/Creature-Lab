@@ -20,6 +20,27 @@ def test_version():
     assert "creature-lab" in result.stdout
 
 
+def test_bare_invocation_runs_a_quick_episode(tmp_path, monkeypatch):
+    """No subcommand should give an instant, terminal-only result (no browser/args)."""
+    pytest.importorskip("pybullet")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0, result.stdout
+    assert "score=" in result.stdout
+    assert "quadruped" in result.stdout
+    assert "creature-lab build" in result.stdout
+    assert (tmp_path / "runs").exists()
+
+
+def test_bare_invocation_does_not_swallow_subcommands():
+    result = runner.invoke(app, ["version"])
+    assert result.exit_code == 0
+    assert "creature-lab" in result.stdout
+    assert "score=" not in result.stdout
+
+
 def test_scaffold_humanoid_defaults_to_footed_12dof(tmp_path):
     out = tmp_path / "humanoid.json"
 

@@ -1,7 +1,7 @@
 """Schema for the agent/mutator design loop.
 
 `AgentTrace` records a sequence of tool-driven design attempts so the lab reads as
-a creature-lineage log, not just a physics viewer (see docs/MVP_PLAN.md §5.5).
+a creature-lineage log, not just a physics viewer (see docs/archive/MVP_PLAN.md §5.5).
 """
 
 from __future__ import annotations

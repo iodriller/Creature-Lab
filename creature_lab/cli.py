@@ -362,88 +362,40 @@ def _simulate(
     return _trace_from_frames(creature, task, frames, meta=meta, backend=backend)
 
 
-@app.command(rich_help_panel="Advanced")
-def version() -> None:
-    """Print the Creature Lab version."""
-    console.print(f"creature-lab {VERSION}")
+@app.callback(invoke_without_command=True)
+def _default(ctx: typer.Context) -> None:
+    """Run a quick built-in episode and print its score and diagnosis.
 
-
-_STATUS_STYLE = {"ok": "green", "missing": "red", "warn": "yellow", "info": "cyan"}
-
-
-@app.command(rich_help_panel="Advanced")
-def doctor() -> None:
-    """Check the environment: optional extras, providers, and that examples run."""
-    table = Table(title=f"creature-lab {VERSION} doctor")
-    table.add_column("check")
-    table.add_column("status")
-    table.add_column("detail")
-    for check in collect_doctor_checks():
-        style = _STATUS_STYLE.get(check.status, "white")
-        table.add_row(check.name, f"[{style}]{check.status}[/{style}]", check.detail)
-    console.print(table)
-
-
-@app.command(rich_help_panel="Advanced")
-def validate(
-    path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
-    task: Annotated[
-        Path | None,
-        typer.Option(help="Also validate a TaskSpec and cross-check it against the creature."),
-    ] = None,
-) -> None:
-    """Validate a creature JSON file (and optionally a task) against the schema."""
-    creature = _load_spec(path, CreatureSpec)
-    console.print(
-        f"[green]valid[/green] creature {creature.name!r}: "
-        f"{len(creature.parts)} part(s), {len(creature.joints)} joint(s), "
-        f"{len(creature.motors)} motor(s)"
-    )
-    if task is not None:
-        task_spec = _load_spec(task, TaskSpec)
-        console.print(f"[green]valid[/green] task {task_spec.name!r}")
-        _check_inputs(creature, task_spec)
-        console.print("[green]ok[/green] creature and task are compatible")
-
-
-@app.command(rich_help_panel="Run And Improve")
-def run(
-    creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
-    task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
-    controller: Annotated[
-        str,
-        typer.Option(
-            help="Controller: 'sinusoid', 'cpg', 'target_seek' (needs a task with a target), "
-            "'posture' (PD balance), or a path to a controller.json."
-        ),
-    ] = "sinusoid",
-    backend: Annotated[
-        str, typer.Option(help="Physics backend: 'pybullet' or 'mujoco'.")
-    ] = "pybullet",
-    gui: Annotated[bool, typer.Option(help="Open a PyBullet GUI window.")] = False,
-    seed: Annotated[int | None, typer.Option(help="Seed recorded in the trace metadata.")] = None,
-    runs_dir: Annotated[
-        Path, typer.Option(help="Directory to save the episode trace under.")
-    ] = DEFAULT_RUNS_DIR,
-    json_output: Annotated[
-        bool, typer.Option("--json", help="Print machine-readable run metadata.")
-    ] = False,
-) -> None:
-    """Run a short physics episode, save its trace, and print the final score."""
-    creature = _load_spec(creature_path, CreatureSpec)
-    task_spec = _load_spec(task, TaskSpec)
-    _check_inputs(creature, task_spec)
-    trace = _simulate(
-        creature, task_spec, gui=gui, seed=seed, controller=controller, backend=backend
-    )
-    run_dir = save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
-    if json_output:
-        _print_json(_saved_run_payload(creature, task_spec, trace, run_dir))
+    With no subcommand, this loads the built-in quadruped, runs its measured gait, and
+    shows what happened - no browser, no arguments, nothing beyond `uv sync --extra sim`.
+    Use `creature-lab build` for the visual editor, or `--help` for every command.
+    """
+    if ctx.invoked_subcommand is not None:
         return
+    from creature_lab.diagnosis import diagnose as run_diagnosis
+
+    creature = default_creature()
+    task_spec = default_task()
+    _check_inputs(creature, task_spec)
+    trace = _simulate(creature, task_spec, controller="curated")
+    run_dir = save_run(creature, trace, task=task_spec)
 
     console.print(
         f"[green]done[/green] {creature.name!r} on {task_spec.name!r}: "
         f"score={trace.score:.4f} ({len(trace.frames)} step(s)) -> {run_dir}"
+    )
+
+    result = run_diagnosis(trace, creature, task_spec)
+    if result.patterns:
+        console.print("\n[bold]Root-cause patterns detected:[/bold]")
+        for pattern, explanation in zip(result.patterns, result.explanations, strict=True):
+            console.print(f"  [yellow]! {pattern}[/yellow] - {explanation}")
+    else:
+        console.print("\n[green]no failure patterns detected[/green] - this run looks healthy.")
+
+    console.print(
+        "\nTry [bold]creature-lab build[/bold] for the visual editor, or "
+        "[bold]creature-lab --help[/bold] for every command."
     )
 
 
@@ -556,6 +508,108 @@ def demo(
         trace = _trace_from_frames(creature, task_spec, frames, meta=meta)
         run_dir = save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
         console.print(f"[green]saved[/green] {len(frames)} frame(s) -> {run_dir}")
+
+
+@app.command(rich_help_panel="Run And Improve")
+def run(
+    creature_path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
+    task: Annotated[Path, typer.Option(help="Path to a TaskSpec JSON file.")],
+    controller: Annotated[
+        str,
+        typer.Option(
+            help="Controller: 'sinusoid', 'cpg', 'target_seek' (needs a task with a target), "
+            "'posture' (PD balance), or a path to a controller.json."
+        ),
+    ] = "sinusoid",
+    backend: Annotated[
+        str, typer.Option(help="Physics backend: 'pybullet' or 'mujoco'.")
+    ] = "pybullet",
+    gui: Annotated[bool, typer.Option(help="Open a PyBullet GUI window.")] = False,
+    seed: Annotated[int | None, typer.Option(help="Seed recorded in the trace metadata.")] = None,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory to save the episode trace under.")
+    ] = DEFAULT_RUNS_DIR,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable run metadata.")
+    ] = False,
+) -> None:
+    """Run a short physics episode, save its trace, and print the final score."""
+    creature = _load_spec(creature_path, CreatureSpec)
+    task_spec = _load_spec(task, TaskSpec)
+    _check_inputs(creature, task_spec)
+    trace = _simulate(
+        creature, task_spec, gui=gui, seed=seed, controller=controller, backend=backend
+    )
+    run_dir = save_run(creature, trace, runs_dir=runs_dir, task=task_spec)
+    if json_output:
+        _print_json(_saved_run_payload(creature, task_spec, trace, run_dir))
+        return
+
+    console.print(
+        f"[green]done[/green] {creature.name!r} on {task_spec.name!r}: "
+        f"score={trace.score:.4f} ({len(trace.frames)} step(s)) -> {run_dir}"
+    )
+
+
+@app.command(rich_help_panel="Replay And Debug")
+def replay(
+    path: Annotated[Path, typer.Argument(help="Path to a trace.json file or run directory.")],
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory used when resolving the `latest` alias.")
+    ] = DEFAULT_RUNS_DIR,
+) -> None:
+    """Print a summary of a saved episode trace."""
+    trace = _load_spec(_resolve_trace_path(path, runs_dir), EpisodeTrace)
+    duration = trace.frames[-1].t  # total simulated time (final frame timestamp)
+    console.print(
+        f"[green]trace[/green] {trace.run_id!r}: {trace.creature_name!r} on "
+        f"{trace.task_name!r} via {trace.backend!r} — {len(trace.frames)} frame(s), "
+        f"{duration:.2f}s, score={trace.score:.4f}"
+    )
+
+
+@app.command(rich_help_panel="Advanced")
+def version() -> None:
+    """Print the Creature Lab version."""
+    console.print(f"creature-lab {VERSION}")
+
+
+_STATUS_STYLE = {"ok": "green", "missing": "red", "warn": "yellow", "info": "cyan"}
+
+
+@app.command(rich_help_panel="Advanced")
+def doctor() -> None:
+    """Check the environment: optional extras, providers, and that examples run."""
+    table = Table(title=f"creature-lab {VERSION} doctor")
+    table.add_column("check")
+    table.add_column("status")
+    table.add_column("detail")
+    for check in collect_doctor_checks():
+        style = _STATUS_STYLE.get(check.status, "white")
+        table.add_row(check.name, f"[{style}]{check.status}[/{style}]", check.detail)
+    console.print(table)
+
+
+@app.command(rich_help_panel="Advanced")
+def validate(
+    path: Annotated[Path, typer.Argument(help="Path to a CreatureSpec JSON file.")],
+    task: Annotated[
+        Path | None,
+        typer.Option(help="Also validate a TaskSpec and cross-check it against the creature."),
+    ] = None,
+) -> None:
+    """Validate a creature JSON file (and optionally a task) against the schema."""
+    creature = _load_spec(path, CreatureSpec)
+    console.print(
+        f"[green]valid[/green] creature {creature.name!r}: "
+        f"{len(creature.parts)} part(s), {len(creature.joints)} joint(s), "
+        f"{len(creature.motors)} motor(s)"
+    )
+    if task is not None:
+        task_spec = _load_spec(task, TaskSpec)
+        console.print(f"[green]valid[/green] task {task_spec.name!r}")
+        _check_inputs(creature, task_spec)
+        console.print("[green]ok[/green] creature and task are compatible")
 
 
 @app.command(rich_help_panel="Start Here")
@@ -1464,23 +1518,6 @@ def ask(
     console.print(
         f"[green]best[/green] score={result.best_score:.4f} "
         f"(seed score={result.trace.steps[0].score:.4f}) -> {run_dir}"
-    )
-
-
-@app.command(rich_help_panel="Replay And Debug")
-def replay(
-    path: Annotated[Path, typer.Argument(help="Path to a trace.json file or run directory.")],
-    runs_dir: Annotated[
-        Path, typer.Option(help="Directory used when resolving the `latest` alias.")
-    ] = DEFAULT_RUNS_DIR,
-) -> None:
-    """Print a summary of a saved episode trace."""
-    trace = _load_spec(_resolve_trace_path(path, runs_dir), EpisodeTrace)
-    duration = trace.frames[-1].t  # total simulated time (final frame timestamp)
-    console.print(
-        f"[green]trace[/green] {trace.run_id!r}: {trace.creature_name!r} on "
-        f"{trace.task_name!r} via {trace.backend!r} — {len(trace.frames)} frame(s), "
-        f"{duration:.2f}s, score={trace.score:.4f}"
     )
 
 

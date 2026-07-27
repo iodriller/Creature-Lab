@@ -2,7 +2,7 @@
 
 This renders poses; it never runs physics. It consumes a stream of FrameState
 objects (recorded or produced live by a backend), keeping the viewer
-backend-agnostic per docs/MVP_PLAN.md. The schema's scalar-first ``(w, x, y, z)``
+backend-agnostic per docs/archive/MVP_PLAN.md. The schema's scalar-first ``(w, x, y, z)``
 quaternion matches Viser's ``wxyz``, so no conversion is needed here.
 
 Viser is an optional dependency (the ``viz`` extra); import this module lazily.

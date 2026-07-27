@@ -2,8 +2,8 @@
 
 **Status:** 0.2 implementation complete; future work is evidence-led. This document supersedes the three drafts in `docs/archive/some-plans/`
 (final roadmap, streamlined controller roadmap, UI/UX plan) and the completed
-[`IMPROVEMENT_PLAN_2026.md`](IMPROVEMENT_PLAN_2026.md). When those disagree with this file,
-this file wins. Keep **one** active roadmap.
+[`IMPROVEMENT_PLAN_2026.md`](../archive/IMPROVEMENT_PLAN_2026.md). When those disagree with this
+file, this file wins. Keep **one** active roadmap.
 
 ## 0.2 delivery summary
 

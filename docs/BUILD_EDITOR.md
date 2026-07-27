@@ -214,10 +214,11 @@ uv run creature-lab evolve outputs/build_creature.json --task examples/crawl_for
 
 ## Troubleshooting
 
-- Browser did not open: copy the printed `http://localhost:<port>` URL into your browser.
-- Port is busy: rerun with `--port 8090`.
+For the browser-didn't-open / port-busy / dependency-install fixes shared with every viewer
+command, see [Getting Started - Troubleshooting](GETTING_STARTED.md#troubleshooting). Editor-
+specific issues:
+
 - Simulate is disabled: read the Errors section in the status line and fix validation issues.
-- Physics dependency is missing: run `uv sync --inexact --extra sim --extra viz`.
 - "Files changed on disk" banner won't go away: click **Reload from disk**, or make any edit to
   autosave your in-editor version back over the external change.
 

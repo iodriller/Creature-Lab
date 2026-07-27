@@ -48,15 +48,8 @@ uv run creature-lab validate examples/quadruped.json --task examples/crawl_forwa
 
 ## Challenge Pack
 
-The packaged zoo includes these task styles:
-
-- `crawl_forward`: basic locomotion on a high-friction plane.
-- `low_friction_crawl`: locomotion with reduced ground friction.
-- `push_recovery`: balance after a lateral impulse.
-- `reach_target`: move toward a visible target sphere.
-- `stability_hold`: stay upright without needing forward progress.
-
-Use:
+The packaged zoo ships these task styles as ready-to-run `TaskSpec` examples — see
+[Zoo - Challenge Pack](ZOO.md#challenge-pack) for the full, current list and terrain variants:
 
 ```bash
 uv run creature-lab zoo list

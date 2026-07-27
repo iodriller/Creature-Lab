@@ -6,11 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
-import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+from _process_utils import port_is_open, taskkill_tree
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PORT = 8080
@@ -88,11 +89,7 @@ def _terminate_tree(proc: subprocess.Popen) -> None:
     if proc.poll() is not None:
         return
     if sys.platform == "win32":
-        subprocess.run(
-            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-            capture_output=True,
-            check=False,
-        )
+        taskkill_tree(proc.pid)
         return
     try:
         proc.terminate()
@@ -269,15 +266,9 @@ def uv_command(explicit: str | None) -> list[str]:
     )
 
 
-def port_is_free(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(0.2)
-        return sock.connect_ex(("127.0.0.1", port)) != 0
-
-
 def choose_port(port: int, *, explicit: bool) -> int:
     """Choose a viewer port, avoiding stale local servers on the default port."""
-    if port_is_free(port):
+    if not port_is_open(port):
         return port
 
     if explicit:
@@ -287,7 +278,7 @@ def choose_port(port: int, *, explicit: bool) -> int:
         )
 
     for candidate in range(port + 1, port + 20):
-        if port_is_free(candidate):
+        if not port_is_open(candidate):
             print(
                 f"Port {port} is already in use; using http://localhost:{candidate} instead.",
                 flush=True,

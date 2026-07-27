@@ -81,9 +81,10 @@ All notable changes to Creature Lab are documented here. Format loosely follows
   honestly: a working training loop with a measured positive result, not a promise of a polished
   walker. A later hand-tuned humanoid baseline demonstrates slow PyBullet stepping, but is not an
   RL result or a claim of general bipedal control.
-- **Single active roadmap** ([`docs/GRAND_PLAN.md`](docs/GRAND_PLAN.md)): reconciles the three
-  overlapping plan drafts (now archived under `docs/archive/some-plans/`) into one phased plan;
-  `docs/ROADMAP.md` is reduced to a pointer and `IMPROVEMENT_PLAN_2026.md` is marked completed.
+- **Single active roadmap** ([`docs/project/GRAND_PLAN.md`](docs/project/GRAND_PLAN.md)):
+  reconciles the three overlapping plan drafts (now archived under `docs/archive/some-plans/`)
+  into one phased plan; `docs/project/ROADMAP.md` is reduced to a pointer and
+  `docs/archive/IMPROVEMENT_PLAN_2026.md` is marked completed.
   The README now leads with a plain-language "what is this" and the design→move→test→improve loop.
 - **Editor foundation, complete** (Grand Plan Phase 1): the build editor is reorganised from a
   vertical folder wall into **Design / Motion / Test** phases with a Project + History header.
@@ -104,7 +105,7 @@ All notable changes to Creature Lab are documented here. Format loosely follows
   (restore/replay saved runs, `runs.list_recent_runs`); and simplified **Quick/Standard/Thorough**
   robustness levels with a plain-language verdict (`robustness.plain_language_verdict`). Guided
   limb creation, a visual gait composer, a kinematic motion preview, and an explicit before/after
-  comparison view remain deferred — see `docs/GRAND_PLAN.md` Phase 2.
+  comparison view remain deferred — see `docs/project/GRAND_PLAN.md` Phase 2.
 - **Target-seeking controller** (Grand Plan Phase 3): `--controller target_seek` steers the
   existing CPG gait toward a task's target — body-frame heading-error steering, distance-based
   speed scaling, and a stop radius (`creature_lab/controllers/target_seek.py`), deterministic and
@@ -116,13 +117,13 @@ All notable changes to Creature Lab are documented here. Format loosely follows
   invalid `--controller` name exited silently with no error message (`typer.BadParameter` raised
   outside a parameter callback isn't printed by Click). New `target_not_approached` diagnosis
   pattern with an Apply-fix that switches to `target_seek`. Posture/balance control and
-  per-actuator force/torque limits remain deferred — see `docs/GRAND_PLAN.md` Phase 3.
+  per-actuator force/torque limits remain deferred — see `docs/project/GRAND_PLAN.md` Phase 3.
 - **`qualify` command** (Grand Plan Phase 4): combines a baseline run, a robustness sweep, and
   (for `backend-portable`, or `--check-portability`) a cross-backend comparison into one
   pass/fail result with a named primary blocker and a recommended next test
   (`creature_lab/qualification.py`). Built-in profiles: `basic-locomotion`, `target-reach`,
   `push-recovery`, `backend-portable`. PyPI publishing, multi-OS CI, and a CLI command-module
-  split remain out of scope for this pass — see `docs/GRAND_PLAN.md` Phase 4.
+  split remain out of scope for this pass — see `docs/project/GRAND_PLAN.md` Phase 4.
 - **Audit pass: bug fixes, `ControllerSpec`, and `export-pack`** (Grand Plan Phase 4.5): an
   end-to-end re-verification of Phases 1–4 against the running code found and fixed four real
   bugs — `fell` used to depend on `task.reward.fall_penalty` being configured and is now
@@ -140,10 +141,11 @@ All notable changes to Creature Lab are documented here. Format loosely follows
   (`creature_lab/exporting.py`), which bundles a run's creature/task/controller/trace plus a
   reproducibility-hash `manifest.json` into one portable, shareable directory. Also added a
   **Qualify** panel to the build editor's Test phase, and a steerability warning when `target_seek`
-  is selected on a creature with no `l`/`r`-suffixed motored joint. See `docs/GRAND_PLAN.md`
-  Phase 4.5.
+  is selected on a creature with no `l`/`r`-suffixed motored joint. See
+  `docs/project/GRAND_PLAN.md` Phase 4.5.
 
-Earlier phases from [`docs/IMPROVEMENT_PLAN_2026.md`](docs/IMPROVEMENT_PLAN_2026.md), building on
+Earlier phases from
+[`docs/archive/IMPROVEMENT_PLAN_2026.md`](docs/archive/IMPROVEMENT_PLAN_2026.md), building on
 the complete MVP:
 
 - **Self-contained HTML reports** (Phase R): `report --html` writes a single offline run

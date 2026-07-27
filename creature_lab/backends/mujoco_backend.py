@@ -4,7 +4,7 @@ Only this module imports ``mujoco``. The model is built at runtime from the MJCF
 exporter (``export_mjcf``), so the creature spec stays the single source of truth.
 Scoring reuses the backend-neutral ``scoring`` module, exactly like the PyBullet
 backend, so the two engines score episodes the same way (even though their exact
-dynamics differ — see docs/MVP_PLAN.md on portability).
+dynamics differ — see docs/archive/MVP_PLAN.md on portability).
 """
 
 from __future__ import annotations

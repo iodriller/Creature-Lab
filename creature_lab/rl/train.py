@@ -3,7 +3,7 @@
 Grand Plan Phase 5, Tier 3: a creature learning to move through
 :class:`~creature_lab.env.CreatureEnv`, rather than a hand-tuned open-loop gait
 (Tier 1) or hand-tuned feedback (Tier 2). Deliberately scoped honestly (see
-``docs/GRAND_PLAN.md``): this is a working training loop that measurably improves a
+``docs/project/GRAND_PLAN.md``): this is a working training loop that measurably improves a
 locomotion metric over a random baseline, not a promise of a polished walker -
 real bipedal walking is a research problem, not a short-training-run outcome.
 """

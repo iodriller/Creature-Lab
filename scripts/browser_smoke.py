@@ -32,11 +32,11 @@ from __future__ import annotations
 import argparse
 import os
 import signal
-import socket
 import subprocess
 import sys
-import time
 from pathlib import Path
+
+from _process_utils import free_port, taskkill_tree, wait_for_port
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -53,25 +53,6 @@ _NOISE = (
     "Connected!",
     "Disconnected!",
 )
-
-
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
-def _wait_for_port(port: int, *, open_state: bool, timeout: float) -> bool:
-    """Wait until localhost ``port`` becomes open/closed without a fixed sleep."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(0.25)
-            is_open = sock.connect_ex(("127.0.0.1", port)) == 0
-        if is_open == open_state:
-            return True
-        time.sleep(0.1)
-    return False
 
 
 class _Smoke:
@@ -194,7 +175,7 @@ def main() -> int:
         )
         return 2
 
-    port = args.port or _free_port()
+    port = args.port or free_port()
     url = f"http://localhost:{port}"
 
     def log(msg: str) -> None:
@@ -210,7 +191,7 @@ def main() -> int:
     )
     result = 1
     try:
-        if not _wait_for_port(port, open_state=True, timeout=30):
+        if not wait_for_port(port, open_state=True, timeout=30):
             log("server did not open its port within 30 seconds")
         else:
             result = run(url, log)
@@ -219,9 +200,7 @@ def main() -> int:
             # Kill the live wrapper and descendants in one operation. Terminating
             # the uv wrapper first loses the process-tree relationship and used to
             # orphan creature-lab/Python servers on every successful smoke run.
-            subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False
-            )
+            taskkill_tree(proc.pid)
         else:
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
@@ -231,15 +210,11 @@ def main() -> int:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             if sys.platform == "win32":
-                subprocess.run(
-                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                    capture_output=True,
-                    check=False,
-                )
+                taskkill_tree(proc.pid)
             else:
                 os.killpg(proc.pid, signal.SIGKILL)
             proc.wait(timeout=5)
-        if not _wait_for_port(port, open_state=False, timeout=10):
+        if not wait_for_port(port, open_state=False, timeout=10):
             log(f"cleanup failure: server port {port} is still open")
             result = 1
     return result

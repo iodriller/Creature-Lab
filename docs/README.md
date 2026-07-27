@@ -1,30 +1,7 @@
 # Documentation
 
-Start with the launcher, then use the topic docs when you need more detail.
-
-## First Run
-
-```bash
-python scripts/start.py
-```
-
-On Windows PowerShell:
-
-```powershell
-.\scripts\start.ps1
-```
-
-The launcher installs starter extras, runs `creature-lab doctor`, and opens the interactive build
-editor. Use `--mode demo` for looping read-only playback.
-
-## Manual Path
-
-```bash
-uv sync --inexact --extra sim --extra viz
-uv run creature-lab demo --open-browser
-```
-
-Use the manual path when you want to control dependency extras or call the CLI directly.
+Start with the launcher (see the root [README](../README.md) for the exact commands), then use
+the topic docs below when you need more detail.
 
 ## Reading Order
 
@@ -36,8 +13,16 @@ Use the manual path when you want to control dependency extras or call the CLI d
 6. [Run Artifacts](RUN_ARTIFACTS.md) - saved traces, reports, and reproducibility.
 7. [Zoo](ZOO.md) - packaged creatures, tasks, baselines, benchmarks, and gallery.
 8. [Failure Lab](FAILURE_LAB.md) - three reproducible education exercises.
-9. [Grand Plan](GRAND_PLAN.md) - the single active roadmap: what Creature Lab is and where it's going.
-10. [Roadmap](ROADMAP.md) - the durable guard rails (points to the Grand Plan).
-11. [Releasing](RELEASING.md) - verified distributions, clean-install smoke, and publication gates.
+9. [Known Issues](KNOWN_ISSUES.md) - latent gaps and deliberate limitations found in review.
+
+## Project And Release
+
+Maintainer-facing material - not needed to use the tool:
+
+- [Grand Plan](project/GRAND_PLAN.md) - the single active roadmap: what Creature Lab is and
+  where it's going.
+- [Roadmap](project/ROADMAP.md) - the durable guard rails (points to the Grand Plan).
+- [Releasing](project/RELEASING.md) - verified distributions, clean-install smoke, and
+  publication gates.
 
 Historical plans and audits live in [archive](archive/).

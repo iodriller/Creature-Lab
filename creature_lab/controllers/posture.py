@@ -1,7 +1,7 @@
 """Closed-loop posture/balance controller: PD feedback on root pitch.
 
 This is Creature Lab's first controller that actually senses and corrects rather
-than blindly playing a waveform (see ``docs/GRAND_PLAN.md`` Phase 5, Tier 2). It
+than blindly playing a waveform (see ``docs/project/GRAND_PLAN.md`` Phase 5, Tier 2). It
 reads the previous frame's root orientation, estimates forward/backward lean and its
 rate of change, and applies a corrective offset to hip (and knee/ankle, if present)
 joint targets on top of an optional base pose or gait - the same "read prev_frame,
