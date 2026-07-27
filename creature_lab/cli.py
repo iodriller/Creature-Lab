@@ -277,14 +277,37 @@ def _make_controller(name: str, creature: CreatureSpec, task: TaskSpec):
     raise typer.Exit(code=2)
 
 
+def _controller_fits(controller_path: Path, creature: CreatureSpec) -> bool:
+    """True when a packaged sinusoid controller can still drive this creature.
+
+    Checks joint-id compatibility (every joint the gait commands is still a hinge
+    on this body) - the same test ``controller validate`` uses - rather than an
+    exact spec match. A packaged gait is keyed purely by joint id, so resizing a
+    part, retuning an amplitude, or changing mass/color doesn't invalidate it; only
+    removing/renaming the joints it drives does. Requiring an exact hash match
+    instead would silently drop the packaged gait for the *first* edit a user makes
+    in the build editor - see docs/KNOWN_ISSUES.md.
+    """
+    try:
+        from creature_lab.schema import ControllerSpec, ControllerType
+
+        spec = ControllerSpec.model_validate_json(controller_path.read_text())
+    except (OSError, ValueError):
+        return False
+    if spec.type != ControllerType.SINUSOID or not spec.motors:
+        return False
+    hinge_joints = {joint.id for joint in creature.joints if joint.type.value == "hinge"}
+    spec_joints = {motor.joint for motor in spec.motors}
+    return spec_joints <= hinge_joints
+
+
 def _curated_controller(creature: CreatureSpec) -> str:
     """Best packaged first-run controller, with safe fallbacks for edited bodies."""
     try:
-        from creature_lab.zoo import zoo_creature, zoo_optimized_controller
+        from creature_lab.zoo import zoo_optimized_controller
 
-        packaged, _task = zoo_creature(creature.name)
         optimized = zoo_optimized_controller(creature.name)
-        if optimized is not None and spec_hash(packaged) == spec_hash(creature):
+        if optimized is not None and _controller_fits(optimized, creature):
             return str(optimized)
     except (KeyError, OSError, ValueError):
         pass

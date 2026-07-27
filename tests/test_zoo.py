@@ -1,5 +1,7 @@
 """Tests for the Creature Zoo gallery and its CLI."""
 
+from pathlib import Path
+
 import pytest
 from typer.testing import CliRunner
 
@@ -152,6 +154,90 @@ def test_zoo_run_curated_default_uses_the_optimized_gait():
     curated_score = json.loads(curated.stdout)["score"]
     assert curated_score == pytest.approx(json.loads(optimized.stdout)["score"])
     assert curated_score > json.loads(baseline.stdout)["score"]
+
+
+def test_curated_controller_survives_editing_the_humanoid(tmp_path):
+    """Regression test: editing any slider on the humanoid used to make `curated`
+    silently fall back to `posture` (which stands still and never walks), because
+    the old gate required an exact spec-hash match against the packaged creature.
+    A single motor-amplitude edit doesn't change which joints exist, so the
+    packaged walking gait must still be used - see docs/KNOWN_ISSUES.md."""
+    pytest.importorskip("pybullet")
+    creature, task = zoo_creature("humanoid_12dof", "walk")
+    edited = creature.model_copy(deep=True)
+    edited.motors[0].amplitude = round(edited.motors[0].amplitude + 0.01, 4)
+    assert edited.motors[0].amplitude != creature.motors[0].amplitude  # sanity: it did change
+
+    creature_path = tmp_path / "humanoid.json"
+    task_path = tmp_path / "walk.json"
+    creature_path.write_text(edited.model_dump_json())
+    task_path.write_text(task.model_dump_json())
+    runs_dir = tmp_path / "runs"
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            str(creature_path),
+            "--task",
+            str(task_path),
+            "--controller",
+            "curated",
+            "--runs-dir",
+            str(runs_dir),
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+
+    import json
+
+    payload = json.loads(result.stdout)
+    saved_trace = json.loads((Path(payload["run_dir"]) / "trace.json").read_text())
+    meta_controller = saved_trace["meta"]["controller"]
+    assert meta_controller != "posture", (
+        "editing a slider must not silently disable the packaged walking gait"
+    )
+    assert meta_controller.endswith("controller.json")
+    assert payload["score"] > 0.1  # posture alone can't reach this; confirms it actually walked
+
+
+def test_curated_controller_falls_back_when_a_driven_joint_is_removed(tmp_path):
+    """The joint-id compatibility check must still reject a genuinely incompatible
+    body - it should be more lenient than an exact hash match, not unconditional."""
+    pytest.importorskip("pybullet")
+    creature, task = zoo_creature("humanoid_12dof", "walk")
+    incompatible = creature.model_copy(deep=True)
+    incompatible.joints = [j for j in incompatible.joints if j.id != "ankle_l"]
+    incompatible.motors = [m for m in incompatible.motors if m.joint != "ankle_l"]
+
+    creature_path = tmp_path / "humanoid.json"
+    task_path = tmp_path / "walk.json"
+    creature_path.write_text(incompatible.model_dump_json())
+    task_path.write_text(task.model_dump_json())
+    runs_dir = tmp_path / "runs"
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            str(creature_path),
+            "--task",
+            str(task_path),
+            "--controller",
+            "curated",
+            "--runs-dir",
+            str(runs_dir),
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+
+    import json
+
+    payload = json.loads(result.stdout)
+    saved_trace = json.loads((Path(payload["run_dir"]) / "trace.json").read_text())
+    assert saved_trace["meta"]["controller"] == "posture"
 
 
 def test_zoo_run_optimized_controller_errors_cleanly_when_none_packaged():
