@@ -297,6 +297,30 @@ class EditorSession:
         self.controller = name
         self.last_message = f"Controller set to {name}"
 
+    def describe_controller(self, name: str | None = None) -> str:
+        """Human description of what a controller selection resolves to right now.
+
+        ``curated`` is a placeholder resolved at simulate-time (see
+        ``creature_lab.controllers.factory.curated_controller``); every other name
+        in ``AVAILABLE_CONTROLLERS`` runs directly. Exposed so the panel can show
+        *what will actually drive the creature* instead of leaving ``curated``
+        opaque - an edited body used to silently fall back to a controller that
+        never walks with no visible sign anything changed (see docs/KNOWN_ISSUES.md).
+        """
+        from creature_lab.controllers.factory import curated_controller
+
+        name = name if name is not None else self.controller
+        resolved = curated_controller(self.creature) if name == "curated" else name
+        if resolved.endswith("controller.json"):
+            return "packaged walking gait"
+        return {
+            "posture": "posture (holds a standing pose, does not walk)",
+            "cpg": "CPG oscillator gait",
+            "hold": "holds still - no motors",
+            "sinusoid": "sinusoid gait",
+            "target_seek": "steers toward the task target",
+        }.get(resolved, resolved)
+
     def reset_to_template(self) -> None:
         """Regenerate the creature from its template defaults (undoable)."""
         if self.template == "custom":
@@ -800,6 +824,18 @@ class EditorSession:
         self.selected_part_id = self.creature.parts[0].id
         self.selected_motor_id = self.creature.motors[0].joint if self.creature.motors else ""
         self.last_message = f"Restored design from {creature_path.parent.name}"
+
+    def apply_refit_gait(self, tuned: CreatureSpec) -> None:
+        """Adopt a CMA-ES-retuned gait (the editor's "Re-fit gait" action, undoable).
+
+        ``tuned`` must share this creature's parts/joints - CMA-ES holds morphology
+        fixed and only retunes ``motors[].amplitude/frequency/phase`` (see
+        ``creature_lab.evolve.cmaes``) - so, unlike ``restore_from_run``, template/
+        params/selection all stay valid and don't need resetting.
+        """
+        self._checkpoint()
+        self.creature = tuned
+        self.last_message = "Re-fitted gait: motor amplitude/frequency/phase tuned to this body."
 
     @property
     def creature_file(self) -> Path | None:

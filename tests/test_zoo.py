@@ -208,8 +208,15 @@ def test_curated_controller_falls_back_when_a_driven_joint_is_removed(tmp_path):
     pytest.importorskip("pybullet")
     creature, task = zoo_creature("humanoid_12dof", "walk")
     incompatible = creature.model_copy(deep=True)
-    incompatible.joints = [j for j in incompatible.joints if j.id != "ankle_l"]
-    incompatible.motors = [m for m in incompatible.motors if m.joint != "ankle_l"]
+    # Rename one joint the packaged gait drives (not delete it - deleting a joint
+    # breaks the body's tree structure and fails CreatureSpec validation before we
+    # even get to the controller-compatibility check this test targets).
+    for joint in incompatible.joints:
+        if joint.id == "ankle_l":
+            joint.id = "ankle_l_renamed"
+    for motor in incompatible.motors:
+        if motor.joint == "ankle_l":
+            motor.joint = "ankle_l_renamed"
 
     creature_path = tmp_path / "humanoid.json"
     task_path = tmp_path / "walk.json"

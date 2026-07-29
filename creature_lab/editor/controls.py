@@ -2,8 +2,10 @@
 
 The panel is organised as the product loop, not as a wall of folders:
 
-    Project + History (always visible)
-      -> Design  ->  Motion  ->  Test        (tabs)
+    Undo/Redo + Advanced mode (compact header, always visible)
+      -> Design  ->  Motion  ->  Test        (phases, primary navigation)
+    Project + History (collapsed folders below the phases - Open/Save,
+      snapshots, Reset to template; not needed for a first run)
 
 Each tab owns a few rebuildable folders. A **Basic/Advanced** switch (backed by
 ``EditorSession.mode``) hides the controls a first-time user does not need.
@@ -28,6 +30,7 @@ from creature_lab.diagnosis import diagnose
 from creature_lab.diagnostics import summarize_episode
 from creature_lab.editor import presets
 from creature_lab.editor.jobs import EditorJobManager, JobStatus
+from creature_lab.editor.labels import friendly_label, hierarchy_rows
 from creature_lab.editor.playback import EditorPlayback
 from creature_lab.editor.session import AVAILABLE_CONTROLLERS, EditorSession
 from creature_lab.hashing import spec_hash
@@ -56,6 +59,9 @@ class BuildControls:
         on_start_robustness: Callable[[int, float, float], None],
         on_start_qualify: Callable[[str], None],
         on_playback_frame: Callable[[FrameState], None],
+        notify: Callable[[str, str, str], None] | None = None,
+        on_frame_camera: Callable[[], None] | None = None,
+        on_start_refit_gait: Callable[[int], None] | None = None,
         runs_dir: Path = DEFAULT_RUNS_DIR,
         show_onboarding: bool = False,
     ) -> None:
@@ -65,10 +71,15 @@ class BuildControls:
         self.playback = playback
         self.on_preview = on_preview
         self.on_preview_light = on_preview_light or on_preview
+        self.on_frame_camera = on_frame_camera or (lambda: None)
         self.on_start_simulate = on_start_simulate
         self.on_start_robustness = on_start_robustness
         self.on_start_qualify = on_start_qualify
+        self.on_start_refit_gait = on_start_refit_gait or (lambda attempts: None)
         self.on_playback_frame = on_playback_frame
+        #: (title, body, color) -> None, broadcast to every connected browser tab.
+        #: Optional so the fake-GUI unit tests don't need to supply one.
+        self.notify = notify or (lambda title, body, color: None)
         self.runs_dir = runs_dir
         # Phase containers (created once) and the rebuildable folders inside them.
         # These are explicit show/hide folders instead of browser-local tabs, so a
@@ -90,6 +101,7 @@ class BuildControls:
         self._onboarding_folder: Any | None = None
         # Persistent handles updated in place.
         self._message: Any | None = None
+        self._controller_resolution_md: Any | None = None
         self._simulate_button: Any | None = None
         self._undo_button: Any | None = None
         self._redo_button: Any | None = None
@@ -104,6 +116,7 @@ class BuildControls:
         self._robustness_result_md: Any | None = None
         self._qualify_button: Any | None = None
         self._qualify_result_md: Any | None = None
+        self._refit_gait_button: Any | None = None
         self._last_trace: EpisodeTrace | None = None
         self._last_robustness: RobustnessResult | None = None
         self._last_qualification: QualificationResult | None = None
@@ -135,13 +148,18 @@ class BuildControls:
         if show_onboarding:
             self._build_onboarding_panel()
 
-        self._build_project_folder()
-        self._build_history_folder()
+        self._build_header_controls()
+
+        # Phase nav is the primary navigation - it used to sit below ~500px of
+        # Project/History controls (7 of them disabled on load); it's now the
+        # first thing after the title, matching how it's used (see
+        # docs/KNOWN_ISSUES.md). Project/History move to collapsed folders below
+        # the tabs - see ``_build_project_folder``/``_build_history_folder``.
+        self._phase_selector = self.gui.add_button_group("Phase", ["Design", "Motion", "Test"])
+        self._phase_selector.on_click(lambda event: self._show_phase(event.target.value))
         self._message = self.gui.add_markdown("")
         self._build_job_status_widgets()
 
-        self._phase_selector = self.gui.add_button_group("Phase", ["Design", "Motion", "Test"])
-        self._phase_selector.on_click(lambda event: self._show_phase(event.target.value))
         self._design_tab = self.gui.add_folder("1 · Design", expand_by_default=True)
         self._motion_tab = self.gui.add_folder("2 · Motion", expand_by_default=True, visible=False)
         self._test_tab = self.gui.add_folder("3 · Test", expand_by_default=True, visible=False)
@@ -150,9 +168,41 @@ class BuildControls:
             self._build_template_picker()
         with self._test_tab:
             self._build_run_section()
+            self._build_refit_gait_section()
+
+        self._build_project_folder()
+        self._build_history_folder()
 
         self._rebuild_all()
         self._update_status()
+
+    def _build_header_controls(self) -> None:
+        """Undo/Redo + Advanced mode: compact, and always visible above the tabs.
+
+        Advanced mode has to live outside any folder it also gates (unlike the
+        rest of History's contents, see ``_build_history_folder``) since it's the
+        one switch that reveals exact dimensions/mass/colour/raw-phase controls
+        throughout every tab, not just History's own contents.
+        """
+        advanced = self.gui.add_checkbox(
+            "Advanced mode",
+            self._advanced,
+            hint="Show exact dimensions, mass, colours, raw phases, friction, and "
+            "robustness jitter. Off keeps only the controls needed for a first run.",
+        )
+        advanced.on_update(
+            lambda event: self._safe(
+                lambda: self.session.set_mode("advanced" if event.target.value else "basic"),
+                rebuild_body=True,
+                rebuild_part=True,
+                rebuild_motion=True,
+                rebuild_task=True,
+            )
+        )
+        self._undo_button = self.gui.add_button("Undo", icon="arrow-back-up")
+        self._undo_button.on_click(lambda _event: self._history_action(self.session.undo))
+        self._redo_button = self.gui.add_button("Redo", icon="arrow-forward-up")
+        self._redo_button.on_click(lambda _event: self._history_action(self.session.redo))
 
     def _show_phase(self, phase: str) -> None:
         """Show one workflow phase and restore design state when leaving playback."""
@@ -225,26 +275,9 @@ class BuildControls:
                 overwrite_button.on_click(lambda _event: self._confirm_overwrite_project())
 
     def _build_history_folder(self) -> None:
-        with self.gui.add_folder("History", expand_by_default=True):
-            advanced = self.gui.add_checkbox(
-                "Advanced mode",
-                self._advanced,
-                hint="Show exact dimensions, mass, colours, raw phases, friction, and "
-                "robustness jitter. Off keeps only the controls needed for a first run.",
-            )
-            advanced.on_update(
-                lambda event: self._safe(
-                    lambda: self.session.set_mode("advanced" if event.target.value else "basic"),
-                    rebuild_body=True,
-                    rebuild_part=True,
-                    rebuild_motion=True,
-                    rebuild_task=True,
-                )
-            )
-            self._undo_button = self.gui.add_button("Undo", icon="arrow-back-up")
-            self._undo_button.on_click(lambda _event: self._history_action(self.session.undo))
-            self._redo_button = self.gui.add_button("Redo", icon="arrow-forward-up")
-            self._redo_button.on_click(lambda _event: self._history_action(self.session.redo))
+        """Reset-to-template + snapshots. Undo/Redo/Advanced mode live in the
+        always-visible header instead - see ``_build_header_controls``."""
+        with self.gui.add_folder("History", expand_by_default=False):
             reset = self.gui.add_button("Reset to template", icon="rotate")
             reset.on_click(lambda _event: self._history_action(self.session.reset_to_template))
 
@@ -298,9 +331,15 @@ class BuildControls:
                 rebuild_task=False,
             )
         )
+        frame_button = self.gui.add_button(
+            "Frame creature",
+            icon="focus-2",
+            hint="Point the camera at the creature - lost it off-screen or zoomed too far?",
+        )
+        frame_button.on_click(lambda _event: self.on_frame_camera())
 
     def _build_run_section(self) -> None:
-        with self.gui.add_folder("Run", expand_by_default=True):
+        with self.gui.add_folder("Run", expand_by_default=True, order=10):
             back_to_design = self.gui.add_button("Back to Design", icon="arrow-left")
             back_to_design.on_click(lambda _event: self._show_phase("Design"))
             controller = self.gui.add_dropdown(
@@ -320,12 +359,36 @@ class BuildControls:
                     preview="none",
                 )
             )
-            validate = self.gui.add_button("Validate", icon="check")
-            validate.on_click(lambda _event: self._update_status())
+            self._controller_resolution_md = self.gui.add_markdown("")
             self._simulate_button = self.gui.add_button(
                 "Simulate", icon="player-play", color="blue"
             )
             self._simulate_button.on_click(lambda _event: self._start_simulate())
+            validate = self.gui.add_button("Validate", icon="check")
+            validate.on_click(lambda _event: self._update_status())
+
+    def _build_refit_gait_section(self) -> None:
+        """CMA-ES re-tune this body's own sinusoid motors (order=25: right after
+        Run/Result, before Task) - the fix for a common dead end: editing a body
+        can make a packaged gait no longer fit (see docs/KNOWN_ISSUES.md), and
+        this turns that into "tune a new one" instead of a manual CLI round trip.
+        Needs the optional 'evolve' extra (`uv sync --extra evolve`); without it
+        the job fails with a clear message instead of the button doing nothing.
+        """
+        with self.gui.add_folder("Re-fit gait", expand_by_default=False, order=25):
+            self.gui.add_markdown(
+                "Retune this body's own motor amplitude/frequency/phase with "
+                "CMA-ES (the same search behind `creature-lab optimize`) - the "
+                "body itself is never changed. Useful when a template's packaged "
+                "gait no longer fits after editing."
+            )
+            attempts_slider = self.gui.add_slider(
+                "Attempts", min=5, max=100, step=5, initial_value=20
+            )
+            self._refit_gait_button = self.gui.add_button("Re-fit gait", icon="wand")
+            self._refit_gait_button.on_click(
+                lambda _event: self._start_refit_gait(int(attempts_slider.value))
+            )
 
     # -- rebuild orchestration --------------------------------------------------
 
@@ -467,12 +530,34 @@ class BuildControls:
 
     # -- Design tab: selected part ---------------------------------------------
 
+    def _add_hierarchy_tree(self) -> None:
+        """Clickable part tree: one small indented button per part.
+
+        Replaces a static markdown tree (just text - selecting a part meant using
+        the dropdown below instead, even though the tree already showed the same
+        structure) with real clickable structure, one button per row.
+        """
+        selected_id = self.session.selected_part_id
+        for depth, part_id in hierarchy_rows(self.session.creature):
+            label = ("&nbsp;&nbsp;&nbsp;" * depth) + friendly_label(part_id)
+            button = self.gui.add_button(label, color="blue" if part_id == selected_id else None)
+            button.on_click(
+                lambda _event, part_id=part_id: self._safe(
+                    lambda: self.session.select_part(part_id),
+                    rebuild_body=False,
+                    rebuild_part=True,
+                    rebuild_motion=False,
+                    rebuild_task=False,
+                    preview="light",
+                )
+            )
+
     def _rebuild_part_controls(self) -> None:
         self._remove_folder("_part_folder")
         with self._design_tab:
             self._part_folder = self.gui.add_folder("Selected part", expand_by_default=True)
         with self._part_folder:
-            self.gui.add_markdown(self.session.part_hierarchy_markdown())
+            self._add_hierarchy_tree()
             part = self.session.selected_part()
             part_select = self.gui.add_dropdown(
                 "Part",
@@ -770,7 +855,7 @@ class BuildControls:
     def _rebuild_task_controls(self) -> None:
         self._remove_folder("_task_folder")
         with self._test_tab:
-            self._task_folder = self.gui.add_folder("Task", expand_by_default=True)
+            self._task_folder = self.gui.add_folder("Task", expand_by_default=True, order=30)
         with self._task_folder:
             task = self.gui.add_dropdown(
                 "Task",
@@ -914,6 +999,24 @@ class BuildControls:
         self.on_start_qualify(profile_name)
         self._render_job_status(self.job_manager.status())
 
+    def _start_refit_gait(self, attempts: int) -> None:
+        if self.job_manager.is_running:
+            self.session.last_message = "A job is already running."
+            self._update_status()
+            return
+        status = self.session.status()
+        if not status.ok:
+            self.session.last_message = "Fix validation errors before re-fitting the gait."
+            self._update_status()
+            return
+        if not self.session.creature.motors:
+            self.session.last_message = "This body has no motors to re-fit."
+            self._update_status()
+            return
+        self._pending_job_kind = "refit_gait"
+        self.on_start_refit_gait(attempts)
+        self._render_job_status(self.job_manager.status())
+
     # -- background job polling (called from the main loop) ---------------------
 
     def tick(self, dt: float) -> None:
@@ -949,6 +1052,8 @@ class BuildControls:
             self._robustness_button.disabled = running
         if self._qualify_button is not None:
             self._qualify_button.disabled = running
+        if self._refit_gait_button is not None:
+            self._refit_gait_button.disabled = running
 
     def _current_run_signature(self) -> tuple[str, str, str]:
         """Identity of the current (creature, task, controller) - a run is stale once
@@ -978,6 +1083,19 @@ class BuildControls:
 
     def _consume_completed_job(self, status: JobStatus) -> None:
         kind, self._pending_job_kind = self._pending_job_kind, None
+        if kind == "refit_gait":
+            # Route through _history_action (not the run-signature bookkeeping
+            # below): this is a body/motor mutation, like Undo/Reset-to-template/
+            # Apply-fix, not a new Result/Robustness/Qualify to display - it
+            # already handles autosave, a full rebuild, and discarding any
+            # now-stale Result/Robustness/Qualify for the previous motor values.
+            self._history_action(lambda: self.session.apply_refit_gait(status.result))
+            self.notify(
+                "Gait re-fitted",
+                "Motor amplitude/frequency/phase tuned to this body - see Motion.",
+                "blue",
+            )
+            return
         self._last_run_signature = self._current_run_signature()
         if kind == "simulate":
             trace, run_dir = status.result
@@ -986,7 +1104,11 @@ class BuildControls:
             first = self.playback.current_frame()
             if first is not None:
                 self.on_playback_frame(first)
-            self.session.last_message = f"Simulated score={trace.score:.4f}; saved {run_dir}"
+            self.session.last_message = (
+                f"{self.session.creature.name!r} on {self.session.task.name!r}: "
+                f"score={trace.score:+.4f} — see Result below."
+            )
+            self._notify_simulate_result(trace)
             self._rebuild_playback_controls()
             self._rebuild_run_history_controls()
         elif kind == "robustness":
@@ -1000,6 +1122,39 @@ class BuildControls:
         self._render_robustness_result()
         self._render_qualify_result()
         self._update_status()
+
+    def _notify_simulate_result(self, trace: EpisodeTrace) -> None:
+        """Broadcast a notification for the Simulate result.
+
+        The payoff moment of the whole tool used to be one line of body text
+        sitting above the Result panel (see docs/KNOWN_ISSUES.md) - make it
+        unmissable instead. When 'curated' silently fell back to a weaker
+        controller because an edit made the packaged gait no longer fit, say so
+        explicitly: that used to look identical to "nothing happened."
+        """
+        used = trace.meta.controller if trace.meta is not None else None
+        if self.session.controller == "curated" and used is not None:
+            if not used.endswith("controller.json"):
+                from creature_lab.zoo import zoo_optimized_controller
+
+                try:
+                    packaged_exists = (
+                        zoo_optimized_controller(self.session.creature.name) is not None
+                    )
+                except KeyError:
+                    packaged_exists = False
+                if packaged_exists:
+                    self.notify(
+                        "Curated gait fell back",
+                        "This body no longer fits the packaged walking gait, so "
+                        f"'curated' used {self.session.describe_controller()} "
+                        "instead - see Run for what changed.",
+                        "yellow",
+                    )
+                    return
+        summary = summarize_episode(trace, self.session.task, self.session.creature)
+        headline = self._progress_headline(summary, self.session.task)
+        self.notify("Simulation complete", f"{headline}. Score: {trace.score:+.3f}.", "blue")
 
     def _consume_ended_job(self, status: JobStatus) -> None:
         self._pending_job_kind = None
@@ -1021,7 +1176,9 @@ class BuildControls:
     def _rebuild_playback_controls(self) -> None:
         self._remove_folder("_playback_folder")
         with self._test_tab:
-            self._playback_folder = self.gui.add_folder("Playback", expand_by_default=True)
+            self._playback_folder = self.gui.add_folder(
+                "Playback", expand_by_default=True, order=40
+            )
         self._playback_slider = None
         self._playback_play_button = None
         with self._playback_folder:
@@ -1129,7 +1286,11 @@ class BuildControls:
     def _rebuild_metrics_controls(self) -> None:
         self._remove_folder("_metrics_folder")
         with self._test_tab:
-            self._metrics_folder = self.gui.add_folder("Result", expand_by_default=True)
+            # order=20: pinned right after Run regardless of rebuild churn - the
+            # payoff of the whole tool shouldn't require scrolling past Task/
+            # Playback to see (see docs/KNOWN_ISSUES.md). Folders re-append to the
+            # end of their container on every rebuild without an explicit order.
+            self._metrics_folder = self.gui.add_folder("Result", expand_by_default=True, order=20)
         with self._metrics_folder:
             if self._last_trace is None:
                 self.gui.add_markdown(
@@ -1188,7 +1349,9 @@ class BuildControls:
     def _rebuild_robustness_controls(self) -> None:
         self._remove_folder("_robustness_folder")
         with self._test_tab:
-            self._robustness_folder = self.gui.add_folder("Robustness", expand_by_default=False)
+            self._robustness_folder = self.gui.add_folder(
+                "Robustness", expand_by_default=False, order=50
+            )
         with self._robustness_folder:
             self.gui.add_markdown(
                 "Re-simulate under small seeded mass/friction perturbations. A wide score "
@@ -1253,7 +1416,7 @@ class BuildControls:
     def _rebuild_qualify_controls(self) -> None:
         self._remove_folder("_qualify_folder")
         with self._test_tab:
-            self._qualify_folder = self.gui.add_folder("Qualify", expand_by_default=False)
+            self._qualify_folder = self.gui.add_folder("Qualify", expand_by_default=False, order=60)
         with self._qualify_folder:
             self.gui.add_markdown(
                 "Combine a baseline run, a robustness sweep, and (for **backend-portable**) "
@@ -1295,7 +1458,9 @@ class BuildControls:
     def _rebuild_run_history_controls(self) -> None:
         self._remove_folder("_run_history_folder")
         with self._test_tab:
-            self._run_history_folder = self.gui.add_folder("Run History", expand_by_default=False)
+            self._run_history_folder = self.gui.add_folder(
+                "Run History", expand_by_default=False, order=70
+            )
         with self._run_history_folder:
             runs = list_recent_runs(self.runs_dir, limit=8)
             self._run_history_by_label = {}
@@ -1545,6 +1710,9 @@ class BuildControls:
             lines.extend(f"- {warning}" for warning in status.warnings[:4])
         if self._message is not None:
             self._message.content = "\n".join(lines)
+        if self._controller_resolution_md is not None:
+            resolved = self.session.describe_controller()
+            self._controller_resolution_md.content = f"Runs: **{resolved}**"
         if self._simulate_button is not None:
             self._simulate_button.disabled = not status.ok or self.job_manager.is_running
         if self._undo_button is not None:

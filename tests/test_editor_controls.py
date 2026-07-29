@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from creature_lab.editor import presets
 from creature_lab.editor.controls import BuildControls
 from creature_lab.editor.jobs import EditorJobManager, JobCancelled
@@ -224,6 +226,7 @@ def _make_controls(
     on_start_simulate=None,
     on_start_robustness=None,
     on_start_qualify=None,
+    on_start_refit_gait=None,
     runs_dir: Path | None = None,
     show_onboarding: bool = False,
 ) -> tuple[BuildControls, list[str], EditorJobManager, EditorPlayback]:
@@ -240,6 +243,9 @@ def _make_controls(
     def _default_start_qualify(profile_name: str) -> None:
         job_manager.start(lambda reporter: _fake_qualification_result())
 
+    def _default_start_refit_gait(attempts: int) -> None:
+        job_manager.start(lambda reporter: session.creature.model_copy(deep=True))
+
     controls = BuildControls(
         _FakeGui(),
         session,
@@ -250,6 +256,7 @@ def _make_controls(
         on_start_simulate=on_start_simulate or _default_start_simulate,
         on_start_robustness=on_start_robustness or _default_start_robustness,
         on_start_qualify=on_start_qualify or _default_start_qualify,
+        on_start_refit_gait=on_start_refit_gait or _default_start_refit_gait,
         on_playback_frame=lambda frame: events.append("frame"),
         runs_dir=runs_dir or Path("runs"),
         show_onboarding=show_onboarding,
@@ -612,6 +619,71 @@ def test_qualify_result_renders_in_the_fake_gui():
     assert controls._qualify_result_md is not None
     assert "PASS" in controls._qualify_result_md.content
     assert "basic-locomotion" in controls._qualify_result_md.content
+
+
+# -- re-fit gait -----------------------------------------------------------------------
+
+
+def _tuned_creature(session: EditorSession):
+    tuned = session.creature.model_copy(deep=True)
+    tuned.motors[0].amplitude = round(tuned.motors[0].amplitude + 0.2, 4)
+    return tuned
+
+
+def test_refit_gait_runs_as_background_job_and_applies_tuned_motors():
+    session = EditorSession()
+    before = session.creature.motors[0].amplitude
+
+    def start_refit(attempts: int):
+        job_manager.start(lambda reporter: _tuned_creature(session))
+
+    controls, _, job_manager, _ = _make_controls(session, on_start_refit_gait=start_refit)
+
+    controls._start_refit_gait(20)
+    assert controls._pending_job_kind == "refit_gait"
+
+    _wait_for_job_consumed(controls, lambda: session.creature.motors[0].amplitude != before)
+
+    assert session.creature.motors[0].amplitude == pytest.approx(before + 0.2)
+    assert session.can_undo  # routed through _history_action, like Undo/Apply-fix
+    assert "re-fit" in session.last_message.lower()
+
+
+def test_refit_gait_refuses_to_start_while_a_job_is_running():
+    def slow_start(attempts: int) -> None:
+        controls.job_manager.start(lambda reporter: time.sleep(0.2))
+
+    session = EditorSession()
+    controls, _, job_manager, _ = _make_controls(session, on_start_refit_gait=slow_start)
+
+    controls._start_refit_gait(20)
+    assert job_manager.is_running
+    controls._start_refit_gait(20)  # should refuse; job already running
+    assert "already running" in session.last_message
+
+    _wait_until(lambda: not job_manager.is_running)
+
+
+def test_refit_gait_refused_when_session_invalid(monkeypatch):
+    session = EditorSession()
+    controls, _, job_manager, _ = _make_controls(session)
+    monkeypatch.setattr(session, "status", lambda: SessionStatus(ok=False, errors=["bad"]))
+
+    controls._start_refit_gait(20)
+
+    assert job_manager.status().state == "idle"
+    assert "fix validation errors" in session.last_message.lower()
+
+
+def test_refit_gait_refused_when_creature_has_no_motors():
+    session = EditorSession()
+    session.creature.motors.clear()
+    controls, _, job_manager, _ = _make_controls(session)
+
+    controls._start_refit_gait(20)
+
+    assert job_manager.status().state == "idle"
+    assert "no motors" in session.last_message.lower()
 
 
 # -- run history -----------------------------------------------------------------------

@@ -20,12 +20,17 @@ from creature_lab.qualification import qualify as run_qualify
 from creature_lab.robustness import RobustnessResult, run_trials
 from creature_lab.runs import DEFAULT_RUNS_DIR, save_run
 from creature_lab.schema import CreatureSpec, EpisodeTrace, FrameState, TaskSpec
-from creature_lab.viewers.viser_viewer import apply_frame, build_scene, remove_scene
+from creature_lab.viewers.viser_viewer import apply_frame, build_scene, creature_reach, remove_scene
 
 #: (creature, task, *, on_step=None, should_stop=None) -> EpisodeTrace. The keyword
 #: hooks are optional so any plain ``(creature, task) -> EpisodeTrace`` callable still
 #: works; only the async job wiring in this module uses them.
 SimulateFn = Callable[..., EpisodeTrace]
+
+#: Re-frame the camera automatically only when the creature's scale changes by more
+#: than this fraction (template swap, add/delete limb, ...) - a single slider drag
+#: shouldn't yank the camera around. ``frame_camera`` always reframes regardless.
+_REFRAME_THRESHOLD = 0.15
 
 
 class EditorPreview:
@@ -45,6 +50,7 @@ class EditorPreview:
         self.on_change = on_change
         self._handles = None
         self._editor_overlays: list[Any] = []
+        self._framed_reach: float | None = None
 
     def refresh(self) -> None:
         """Full rebuild: tear down and recreate every part, the floor, and overlays.
@@ -62,6 +68,45 @@ class EditorPreview:
         frame = self.session.preview_frame()
         apply_frame(self._handles, frame)
         self._add_editor_overlays(frame)
+        self._maybe_reframe_camera()
+
+    def _maybe_reframe_camera(self) -> None:
+        """Re-frame only when the creature's scale changed enough to matter.
+
+        Without any camera framing at all, a ~0.4 m creature rendered as a
+        barely-visible speck against Viser's default camera (see
+        docs/KNOWN_ISSUES.md). Gating on a relative-size threshold means a
+        template swap (quadruped -> humanoid) reframes automatically, but
+        nudging a single body slider mid-edit does not yank the camera around.
+        """
+        reach = creature_reach(self.session.creature)
+        previous = self._framed_reach
+        if previous is None or abs(reach - previous) / previous > _REFRAME_THRESHOLD:
+            self.frame_camera(reach)
+
+    def frame_camera(self, reach: float | None = None) -> None:
+        """Point the camera at the creature from a comfortable isometric distance.
+
+        Sets both ``initial_camera`` (for clients connecting after this call) and
+        every already-connected client's live camera, since the editor's browser
+        tab is usually already open when a template switch or an explicit
+        **Frame creature** click happens.
+        """
+        if reach is None:
+            reach = creature_reach(self.session.creature)
+        self._framed_reach = reach
+        distance = reach * 2.2
+        look_at = (0.0, 0.0, reach * 0.35)
+        position = (
+            look_at[0] + distance * 0.7,
+            look_at[1] - distance * 0.7,
+            look_at[2] + distance * 0.55,
+        )
+        self.server.initial_camera.position = position
+        self.server.initial_camera.look_at = look_at
+        for client in self.server.get_clients().values():
+            client.camera.position = position
+            client.camera.look_at = look_at
 
     def refresh_overlays(self) -> None:
         """Redraw only the selection gizmo/CoM/support-width overlays.
@@ -187,8 +232,26 @@ def run_editor(
     import viser
 
     server = viser.ViserServer(port=port)
+    server.gui.configure_theme(
+        control_layout="fixed",
+        control_width="large",
+        show_logo=False,
+        show_share_button=False,
+    )
     if open_browser:
         webbrowser.open(f"http://localhost:{port}", new=2)
+
+    def notify(title: str, body: str, color: str) -> None:
+        """Broadcast a notification to every connected browser tab.
+
+        Notifications are per-client in Viser (there is no server-wide
+        broadcast call), so this fans out over ``get_clients()``. Editor state
+        is otherwise server-global (see docs/BUILD_EDITOR.md) - a second tab
+        would silently share the same session, so at least the outcome of a
+        run is visible everywhere the panel is open.
+        """
+        for client in server.get_clients().values():
+            client.add_notification(title, body, color=color, auto_close_seconds=8.0)
 
     controls_holder: dict[str, BuildControls] = {}
 
@@ -329,6 +392,38 @@ def run_editor(
         if not job_manager.start(work):
             session.last_message = "A job is already running."
 
+    def start_refit_gait_job(attempts: int) -> None:
+        """CMA-ES-retune this body's own sinusoid motors (amplitude/frequency/
+        phase only - morphology untouched), the same search `creature-lab
+        optimize`/`evolve --strategy cmaes` already run, aimed at the interactive
+        "the packaged gait doesn't fit this edited body" moment (see
+        docs/KNOWN_ISSUES.md) instead of a separate CLI step.
+        """
+        creature = session.creature
+        task_for_run = session.task
+
+        def work(reporter: ProgressReporter) -> CreatureSpec:
+            import random
+
+            from creature_lab.evolve import cmaes
+
+            calls = 0
+
+            def evaluate(candidate: CreatureSpec) -> float:
+                nonlocal calls
+                reporter.check_cancelled()
+                calls += 1
+                reporter.report(0.0, f"evaluating candidate {calls}")
+                trace = simulate(candidate, task_for_run, controller="sinusoid")
+                return trace.score
+
+            result = cmaes(creature, evaluate, attempts=attempts, rng=random.Random(0))
+            reporter.check_cancelled()
+            return result.best
+
+        if not job_manager.start(work):
+            session.last_message = "A job is already running."
+
     controls_holder["controls"] = BuildControls(
         server.gui,
         session,
@@ -339,7 +434,10 @@ def run_editor(
         on_start_simulate=start_simulate_job,
         on_start_robustness=start_robustness_job,
         on_start_qualify=start_qualify_job,
+        on_start_refit_gait=start_refit_gait_job,
         on_playback_frame=preview.apply_playback_frame,
+        notify=notify,
+        on_frame_camera=lambda: preview.frame_camera(),
         runs_dir=runs_dir,
         show_onboarding=show_onboarding,
     )

@@ -10,8 +10,10 @@ Viser is an optional dependency (the ``viz`` extra); import this module lazily.
 
 from __future__ import annotations
 
+import math
 import time
 import webbrowser
+from collections import defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -22,6 +24,7 @@ from creature_lab.schema.creature import ShapeType
 _DEFAULT_COLOR = (0.6, 0.6, 0.6)
 _CONTACT_COLOR = (255, 60, 40)
 _MAX_CONTACT_MARKERS = 16
+_MIN_REACH = 0.15  # metres; keeps a single-part creature from framing to nothing
 
 
 @dataclass
@@ -38,6 +41,50 @@ def part_color_255(part: PartSpec) -> tuple[int, int, int]:
     """Convert a part's 0..1 RGB color to Viser's 0..255 integer triple."""
     rgb = part.color or _DEFAULT_COLOR
     return tuple(int(round(max(0.0, min(1.0, channel)) * 255)) for channel in rgb)
+
+
+def _part_radius(part: PartSpec) -> float:
+    """Rough half-extent of a part, for a bounding-reach estimate (not rendering)."""
+    if part.shape == ShapeType.BOX and part.size is not None:
+        return max(part.size) / 2
+    if part.shape == ShapeType.SPHERE and part.radius is not None:
+        return part.radius
+    if part.radius is not None and part.length is not None:
+        return max(part.radius, part.length / 2)
+    return 0.05
+
+
+def creature_reach(creature: CreatureSpec) -> float:
+    """Rough max distance any part can be from the root, in the rest pose.
+
+    Ignores joint rotations (unlike ``EditorSession.preview_frame``'s real forward
+    kinematics) - this only has to be in the right ballpark to pick a camera
+    distance or floor-grid size, not to place parts for rendering. Without any
+    camera framing at all, a ~0.4 m creature was rendering as a barely-visible
+    speck on a fixed 10x10 m grid (see docs/KNOWN_ISSUES.md).
+    """
+    child_to_joint = {joint.child: joint for joint in creature.joints}
+    children: dict[str, list] = defaultdict(list)
+    for joint in creature.joints:
+        children[joint.parent].append(joint.child)
+    roots = [part.id for part in creature.parts if part.id not in child_to_joint]
+    if not roots:
+        return _MIN_REACH
+    parts_by_id = {part.id: part for part in creature.parts}
+    root = roots[0]
+    reach = {root: _part_radius(parts_by_id[root])}
+    max_reach = reach[root]
+    queue: deque[str] = deque([root])
+    while queue:
+        parent = queue.popleft()
+        for child in children[parent]:
+            anchor = child_to_joint[child].anchor
+            anchor_length = math.sqrt(sum(component * component for component in anchor))
+            child_reach = reach[parent] + anchor_length + _part_radius(parts_by_id[child])
+            reach[child] = child_reach
+            max_reach = max(max_reach, child_reach)
+            queue.append(child)
+    return max(max_reach, _MIN_REACH)
 
 
 def _add_part(scene: Any, name: str, part: PartSpec) -> Any:
@@ -66,17 +113,23 @@ def _add_part(scene: Any, name: str, part: PartSpec) -> Any:
     return scene.add_mesh_trimesh(name, mesh)
 
 
-def _add_floor(server: Any, task: TaskSpec | None) -> Any:
+def _add_floor(server: Any, task: TaskSpec | None, creature: CreatureSpec | None = None) -> Any:
     """Draw the ground: a flat grid, or a mesh built from the task's terrain heightfield.
 
     Without this, replaying a non-flat-terrain run would show the creature floating
     above (or sinking into) a flat floor instead of the slope/steps/gaps it actually ran on.
     Returns the Viser handle (a grid or a mesh), mainly so tests can tell which was drawn.
+
+    The flat-plane grid is sized from ``creature`` (when given) instead of a fixed
+    10x10 m, so a small creature isn't rendered as a speck on an oversized grid -
+    this is purely a rendering choice; the non-flat heightfield mesh below stays at
+    its fixed physics-accurate extent (see docs/KNOWN_ISSUES.md) and is untouched.
     """
     from creature_lab.terrain import is_flat
 
     if task is None or is_flat(task.terrain):
-        return server.scene.add_grid("/floor", width=10.0, height=10.0, plane="xy")
+        size = 10.0 if creature is None else max(2.0, creature_reach(creature) * 8)
+        return server.scene.add_grid("/floor", width=size, height=size, plane="xy")
 
     import numpy as np
     import trimesh
@@ -121,7 +174,7 @@ def build_scene(
     can share one server (used by ``compare``); ``add_floor`` lets the caller draw a
     single shared floor.
     """
-    floor = _add_floor(server, task) if add_floor else None
+    floor = _add_floor(server, task, creature) if add_floor else None
     extras: list[Any] = []
     if task is not None and task.target is not None:
         target = server.scene.add_icosphere(

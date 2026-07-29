@@ -142,6 +142,48 @@ def build_controller(
     raise ValueError(f"unknown controller type {spec.type!r}")  # pragma: no cover - exhaustive enum
 
 
+def controller_fits(controller_path: Path, creature: CreatureSpec) -> bool:
+    """True when a packaged sinusoid controller can still drive this creature.
+
+    Checks joint-id compatibility (every joint the gait commands is still a hinge
+    on this body) - the same test ``controller validate`` uses - rather than an
+    exact spec match. A packaged gait is keyed purely by joint id, so resizing a
+    part, retuning an amplitude, or changing mass/color doesn't invalidate it; only
+    removing/renaming the joints it drives does. Requiring an exact hash match
+    instead would silently drop the packaged gait for the *first* edit a user makes
+    in the build editor - see docs/KNOWN_ISSUES.md.
+    """
+    try:
+        spec = ControllerSpec.model_validate_json(controller_path.read_text())
+    except (OSError, ValueError):
+        return False
+    if spec.type != ControllerType.SINUSOID or not spec.motors:
+        return False
+    hinge_joints = {joint.id for joint in creature.joints if joint.type == JointType.HINGE}
+    spec_joints = {motor.joint for motor in spec.motors}
+    return spec_joints <= hinge_joints
+
+
+def curated_controller(creature: CreatureSpec) -> str:
+    """Best packaged first-run controller, with safe fallbacks for edited bodies.
+
+    Used both by the CLI (``--controller curated``) and the build editor, so a
+    creature's "curated" gait resolves identically whether it's run from the
+    command line or the browser panel.
+    """
+    try:
+        from creature_lab.zoo import zoo_optimized_controller
+
+        optimized = zoo_optimized_controller(creature.name)
+        if optimized is not None and controller_fits(optimized, creature):
+            return str(optimized)
+    except (KeyError, OSError, ValueError):
+        pass
+    if creature.name.startswith("humanoid"):
+        return "posture"
+    return "cpg" if creature.motors else "hold"
+
+
 def extract_sinusoid_spec(creature: CreatureSpec, *, name: str = "controller") -> ControllerSpec:
     """Migrate a creature's own ``MotorSpec`` gait into an explicit, portable
     sinusoid ``ControllerSpec`` - the "legacy sinusoid" migration path: the result

@@ -7,6 +7,19 @@ All notable changes to Creature Lab are documented here. Format loosely follows
 
 ### Added
 
+- **Re-fit gait:** the build editor's Test phase can now CMA-ES retune a body's own motor
+  amplitude/frequency/phase in place, as a background job with progress and Cancel — the same
+  search behind `creature-lab optimize`, for when a packaged gait no longer fits an edited body.
+  The result is one undo step, like any other design change.
+- **Camera framing:** the build/replay viewer now points the camera at the creature and scales
+  the flat floor grid to its size (`viewers.viser_viewer.creature_reach`), instead of a fixed
+  10x10 m grid; the editor also re-frames automatically on a template swap and offers an explicit
+  **Frame creature** button.
+- A bare `creature-lab` with no arguments now runs a built-in creature through its measured gait
+  and prints score + diagnosis directly to the terminal — no browser or subcommand required.
+- Streamlined CLI/docs/scripts: `--help` now leads with `Start Here` instead of `Advanced`;
+  maintainer-facing roadmap/release docs moved to `docs/project/`; the root README was trimmed;
+  `scripts/start.py`/`scripts/browser_smoke.py` share their process/port helpers.
 - **Experiment Autopsy and Failure Zoo:** `creature-lab autopsy` runs a selected-controller
   baseline, curated-controller counterfactual, task-aware perturbation trials, and optional
   backend comparison, then attributes the likely cause and emits JSON/Markdown/HTML plus a
@@ -23,6 +36,19 @@ All notable changes to Creature Lab are documented here. Format loosely follows
 
 ### Fixed
 
+- **`curated` no longer silently drops the packaged walking gait after a body edit.** The gate
+  required an exact `spec_hash` match against the untouched zoo creature, so any slider edit fell
+  back to `posture` (which never walks) with nothing indicating a swap happened. Now gated on
+  joint-id compatibility instead — the same check `controller validate` already used — so
+  resizing, retuning, or recoloring a part no longer defeats it. The Test panel also states what
+  `curated` resolves to and notifies if it ever does fall back. See `docs/KNOWN_ISSUES.md`.
+- **Build editor layout.** Undo/Redo/Advanced mode moved into an always-visible compact header;
+  Project/History collapsed into folders below the phase tabs instead of ~500px of controls
+  (7 of them disabled on load) sitting above the primary Design/Motion/Test navigation; the Result
+  panel is now pinned directly after Run (Viser's `add_folder(order=...)`) so it survives rebuild
+  churn instead of re-appending to the bottom; the Simulate completion message is a friendly
+  creature/task/score summary instead of a raw `runs\<hash>` path, and fires a notification. The
+  part hierarchy is a clickable button tree instead of static markdown text.
 - **The humanoid loop now delivers a measurable result and returns to Design.** Fixed a PyBullet
   tree-order bug that silently mismatched names, joints, contacts, and traces on branched bodies;
   added per-motor force limits and gait center offsets; corrected humanoid mass and horizontal foot

@@ -8,23 +8,33 @@ viewer, so there is no separate web app, server framework, or frontend build ste
 
 The panel follows the product loop instead of stacking every control in one list:
 
-- **Project** and **History** sit at the top and are always available.
-  - *Project*: creature name, Open/Save paths, and (in project mode) explicit Reload/Overwrite
-    conflict actions.
-  - *History*: **Undo**/**Redo**, **Reset to template**, named **snapshots** (Save/Restore), and
-    the **Advanced mode** switch.
-- An always-visible phase selector holds the workflow: **Design** → **Motion** → **Test**.
-  - *Design*: pick a template, tune body proportions, browse the part hierarchy, and edit the
-    selected part.
+- A compact header sits right below the title: **Advanced mode**, **Undo**, **Redo** - always
+  visible, never buried behind a scroll.
+- The phase selector is the primary navigation, directly under the header: **Design** →
+  **Motion** → **Test**.
+  - *Design*: pick a template, **Frame creature** (point the camera at the current body - useful
+    after a template swap or if you've scrolled/zoomed away), tune body proportions, browse the
+    clickable part hierarchy, and edit the selected part.
   - *Motion*: gait preset plus the selected joint motor's range/speed (and center offset, phase,
     and maximum torque in Advanced).
-  - *Test*: choose a task, **Simulate**, scrub the **Playback**, read the **Result** (score +
-    diagnosis), run a **Robustness** sweep, **Qualify** against a profile, and browse
-    **Run History**.
+  - *Test*: choose a **Controller** (the panel states what it actually resolves to, e.g. "Runs:
+    packaged walking gait" - see [Simulate](#simulate-async-with-progress-and-cancel)),
+    **Simulate**, read the **Result** (score + diagnosis) right below it, scrub the **Playback**,
+    **Re-fit gait** if the packaged gait no longer suits an edited body, run a **Robustness**
+    sweep, **Qualify** against a profile, and browse **Run History**.
+- **Project** and **History** move to collapsed folders below the phases: *Project* (creature
+  name, Open/Save paths, project-mode Reload/Overwrite) and *History* (**Reset to template**,
+  named **snapshots**). Neither is needed for a first run.
 
 **Basic vs. Advanced.** Basic mode (the default) shows only the ~handful of controls needed for a
-first successful run. Flip **Advanced mode** in History to reveal exact dimensions, mass, colours,
-raw motor center/phase/torque, terrain friction, and robustness jitter sliders.
+first successful run. Flip **Advanced mode** in the header to reveal exact dimensions, mass,
+colours, raw motor center/phase/torque, terrain friction, and robustness jitter sliders.
+
+**The camera follows the creature.** The floor grid and the initial camera distance scale to the
+current body (a ~0.4 m creature no longer renders as a barely-visible speck on a fixed 10x10 m
+grid); the camera re-frames automatically when the body's scale changes by more than ~15%
+(e.g. a template swap), and **Frame creature** re-frames on demand for anything smaller, like a
+lost viewport angle.
 
 **Undo is always available.** Every design change (body sliders, part/motor edits, gait, mirror,
 add/delete limb, template swap, snapshot restore, applied diagnosis fix, restored run) is a single
@@ -60,6 +70,14 @@ uv run creature-lab build --preset humanoid
 uv run creature-lab build --preset worm
 ```
 
+**One editor process is one shared session.** All GUI state (the current design,
+which phase is open, snapshots, run history) lives in the Python process, not in
+the browser tab. Opening a second tab or window against the same `build` process
+connects to the *same* session rather than starting an independent one - an edit
+made in one tab is immediately visible in the other. Run a second `creature-lab
+build --port <other>` process (optionally with a different `--project` directory)
+for a genuinely independent second session.
+
 ## Project Mode: Live-Synced Config Files
 
 ```bash
@@ -86,9 +104,19 @@ point at any path.
 The Test phase's **Run** section has a **Controller** dropdown — `curated` (default), `sinusoid`, `cpg`,
 `target_seek`, or `posture` — before the Simulate button (a portable `controller.json` spec, see
 `docs/CLI_REFERENCE.md`'s `controller` command, is a CLI-only `--controller` option; the
-dropdown offers the stable named controllers). `curated` uses a measured packaged gait when the
-body matches one—including the 12-DOF humanoid walker—posture for edited humanoids, or a safe
-fallback. `target_seek` steers toward the current
+dropdown offers the stable named controllers). `curated` uses a measured packaged gait for any
+body whose joints still match it — resizing a part, retuning an amplitude, or changing mass/color
+does not invalidate it, only removing or renaming the joints it drives does (see
+`docs/KNOWN_ISSUES.md`); otherwise it falls back to `posture` for humanoids, or a safe default
+otherwise. Since `curated` is a placeholder resolved right before Simulate runs, a line right
+below the dropdown states what it actually resolves to (e.g. "Runs: **packaged walking gait**" or
+"Runs: **posture (holds a standing pose, does not walk)**"), and a notification calls it out
+explicitly if a body edit ever does make the packaged gait fall back — so "nothing happened, and
+nothing said why" cannot recur silently. If the packaged gait no longer fits after editing, use
+**Re-fit gait** (below Result) to CMA-ES retune this body's own motor amplitude/frequency/phase
+(the same search behind `creature-lab optimize`, run as a background job with progress and
+Cancel) instead of a separate CLI round trip; the retuned motors are one undo step, like any other
+design change. `target_seek` steers toward the current
 task's target (heading-error steering, slowing and stopping near it); the status line shows an
 error and disables Simulate if the current task has no target, and a warning if the current
 creature has no motored joint ending in `l`/`r` (so it has nothing to steer with, and will just
@@ -103,10 +131,11 @@ scene shows a draggable target gizmo. Both paths update the same validated `Task
 single undo steps.
 
 Clicking **Simulate** starts the episode on a background thread instead of freezing the panel: a
-progress bar and elapsed time appear above the phases, and **Cancel** stops it between physics steps
-(the run is discarded, not saved). The **Robustness** sweep runs the same way, with progress
-reported per trial, using whichever controller is currently selected. Only one job runs at a
-time; Simulate and the sweep button are disabled while one is in flight.
+progress bar and elapsed time appear right below the phase selector, and **Cancel** stops it
+between physics steps (the run is discarded, not saved). The **Robustness** sweep and **Re-fit
+gait** run the same way — progress reported per trial/candidate, using whichever controller is
+currently selected for Robustness. Only one job runs at a time; the buttons that start one are
+disabled while another is in flight.
 
 ## Playback: Separate From Simulation
 
