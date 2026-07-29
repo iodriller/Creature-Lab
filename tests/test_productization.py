@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from creature_lab.cli import app
@@ -241,7 +242,13 @@ def test_build_help_is_available():
 
     assert result.exit_code == 0, result.stdout
     assert "build editor" in result.stdout
-    assert "--preset" in result.stdout
+
+    # Rich's help layout can omit or truncate option rows depending on the
+    # detected CI terminal. Assert the command contract directly instead of
+    # coupling this test to terminal rendering.
+    build_command = get_command(app).commands["build"]
+    preset = next(param for param in build_command.params if param.name == "preset")
+    assert "--preset" in preset.opts
 
 
 def test_bench_requires_zoo_flag():
