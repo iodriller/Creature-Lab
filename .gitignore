@@ -26,3 +26,7 @@ outputs/
 .vscode/
 MUJOCO_LOG.TXT
 *.urdf
+
+# Local assistant state
+.claude/settings.local.json
+.claude/scheduled_tasks.lock

@@ -2,9 +2,8 @@
 
 @AGENTS.md
 
-## Claude Code Notes
+## Claude Code
 
-- `AGENTS.md` is the canonical shared project guidance for coding agents.
-- Keep this file short so Claude Code loads the same repo rules without duplicating them.
-- Put private machine-specific notes in `CLAUDE.local.md`; it is gitignored.
-- Use `/memory` in Claude Code to verify loaded instruction files when behavior seems off.
+- `AGENTS.md` is the canonical shared guidance for this repository.
+- Keep private machine notes in `CLAUDE.local.md`, never in this file.
+- Keep occasional multi-step workflows in skills or project documentation.

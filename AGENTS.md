@@ -48,6 +48,9 @@ uv run ruff format --check .
 uv run pytest
 ```
 
+For documentation or agent-guidance-only changes, verify referenced paths and run
+`git diff --check`; application tests are not required.
+
 For CLI or packaging changes, also run:
 
 ```bash
@@ -101,3 +104,11 @@ uv run creature-lab validate examples/tripod.json --task examples/crawl_forward.
   `CLAUDE.local.md`.
 - Treat user-provided JSON as untrusted input and validate before simulation.
 - Do not print or commit LLM provider keys or other secrets.
+
+## Git and Handoff
+
+- Preserve unrelated changes and keep commits focused.
+- Use the configured repository-owner identity.
+- Do not add assistant names, co-author trailers, session links, or tool
+  attribution to Git artifacts.
+- Report what changed, what was verified, what was skipped, and remaining risks.
