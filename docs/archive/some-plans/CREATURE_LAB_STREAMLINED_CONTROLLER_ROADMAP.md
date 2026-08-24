@@ -1,6 +1,6 @@
 # Creature Lab — Streamlined Controller, UX, and Product Roadmap
 
-**Repository:** `iodriller/Creature-Lab`  
+**Repository:** `oney-erge/Creature-Lab`  
 **Prepared:** 2026-07-20  
 **Target release:** `0.2.0`  
 **Status:** Proposed consolidated roadmap

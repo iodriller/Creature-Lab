@@ -79,11 +79,11 @@ rl = [
 creature-lab = "creature_lab.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/iodriller/Creature-Lab"
-Repository = "https://github.com/iodriller/Creature-Lab"
-Issues = "https://github.com/iodriller/Creature-Lab/issues"
-Documentation = "https://github.com/iodriller/Creature-Lab/tree/main/docs"
-Changelog = "https://github.com/iodriller/Creature-Lab/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/oney-erge/Creature-Lab"
+Repository = "https://github.com/oney-erge/Creature-Lab"
+Issues = "https://github.com/oney-erge/Creature-Lab/issues"
+Documentation = "https://github.com/oney-erge/Creature-Lab/tree/main/docs"
+Changelog = "https://github.com/oney-erge/Creature-Lab/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]
