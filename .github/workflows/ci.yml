@@ -13,6 +13,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  launchers:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: runner.os != 'Windows'
+        run: bash -n run.sh run.command
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path run.ps1), [ref]$null, [ref]$errors)
+          if ($errors) { $errors | Format-List; exit 1 }
+
   quality-and-package:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -100,3 +116,18 @@ jobs:
           uv run playwright install --with-deps chromium
       - name: Real first-run browser journey and process cleanup
         run: uv run python scripts/browser_smoke.py
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: docker compose up --detach --build
+      - run: |
+          for attempt in $(seq 1 60); do
+            curl --fail --silent http://127.0.0.1:8080 && exit 0
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+      - if: always()
+        run: docker compose down --volumes

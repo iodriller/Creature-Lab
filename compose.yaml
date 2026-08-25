@@ -1,0 +1,15 @@
+services:
+  creature-lab:
+    build: .
+    image: creature-lab:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${CREATURE_LAB_PORT:-8080}:8080"
+    volumes:
+      - creature-runs:/app/runs
+      - creature-outputs:/app/outputs
+
+volumes:
+  creature-runs:
+  creature-outputs:

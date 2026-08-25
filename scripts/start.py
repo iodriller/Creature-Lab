@@ -204,8 +204,8 @@ def clear_stray_processes(processes: list[tuple[int, str]]) -> None:
 def run_sync_step(uv: list[str], sync_args: list[str], *, dry_run: bool, auto_yes: bool) -> None:
     """Install dependencies, recovering automatically from a stray-process file lock."""
     hint = (
-        "Dependency installation failed. Check your network connection and Python "
-        "version, then try `uv sync --inexact --extra sim --extra viz` manually."
+        "Dependency installation failed. Check your network connection, then try "
+        "`uv sync --frozen --extra sim --extra viz` manually."
     )
     try:
         run_step("Install dependencies", [*uv, *sync_args], dry_run=dry_run, failure_hint=hint)
@@ -398,11 +398,11 @@ def main() -> None:
 
     if not args.skip_sync:
         sync_args = (
-            ["sync", "--inexact", "--all-extras"]
+            ["sync", "--frozen", "--all-extras"]
             if args.full
             else [
                 "sync",
-                "--inexact",
+                "--frozen",
                 "--extra",
                 "sim",
                 "--extra",

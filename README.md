@@ -26,12 +26,17 @@ and opens the interactive **build editor** in your browser — configure a creat
 run it, instead of jumping straight into physics.
 
 ```powershell
-.\scripts\start.ps1
+.\run.bat
 ```
 
 ```bash
-python scripts/start.py
+./run.command  # macOS
+./run.sh       # Linux
 ```
+
+The launcher accepts `doctor`, `repair`, `docker`, `logs`, and `stop`, and
+reuses a current locked environment on later runs. Docker binds the editor to
+loopback and preserves runs and outputs in named volumes.
 
 A terminal shows setup progress and an editor URL such as `http://localhost:8080`. Pick a
 preset, tune it, click **Simulate** to run it through the physics pipeline and read its
@@ -51,7 +56,7 @@ If launch fails, start with `python scripts/start.py --dry-run` and `uv run crea
 ## Manual Quickstart
 
 ```bash
-uv sync --inexact --extra sim --extra viz
+uv sync --frozen --extra sim --extra viz
 uv run creature-lab build
 ```
 
