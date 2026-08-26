@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
+source ./scripts/install-utils.sh
+install_init "$PWD" "Creature Lab"
+install_enable_traps
 
 action="run"
 case "${1:-}" in run|doctor|repair|docker|stop|logs) action=$1; shift ;; esac
@@ -19,12 +22,9 @@ find_uv() {
     return 1
   }
 }
-retry() { local label=$1; shift; for n in 1 2 3; do "$@" && return; [ "$n" -eq 3 ] && { echo "$label failed" >&2; return 1; }; sleep $((1 << (n - 1))); done; }
 install_uv() {
   local file; file=$(mktemp)
-  if command -v curl >/dev/null 2>&1; then retry "uv download" curl -fsSL "https://astral.sh/uv/${uv_version}/install.sh" -o "$file"
-  elif command -v wget >/dev/null 2>&1; then retry "uv download" wget -qO "$file" "https://astral.sh/uv/${uv_version}/install.sh"
-  else echo "curl or wget is required to bootstrap uv" >&2; rm -f "$file"; return 1; fi
+  install_download "https://astral.sh/uv/${uv_version}/install.sh" "$file" "uv download"
   sh "$file"; rm -f "$file"; find_uv
 }
 wait_ready() {
@@ -47,8 +47,11 @@ case "$action" in
     fi
     [ "$action" = stop ] && exec docker compose down
     [ "$action" = logs ] && exec docker compose logs --follow
+    install_lock
+    install_require_space "$PWD" 3
     docker compose up --detach --build
     wait_ready || { docker compose logs; echo "Creature Lab did not become ready." >&2; exit 1; }
+    install_complete
     echo "Creature Lab is ready at http://127.0.0.1:8080"
     if [ "$no_browser" -eq 0 ]; then
       command -v open >/dev/null 2>&1 && open http://127.0.0.1:8080 || command -v xdg-open >/dev/null 2>&1 && xdg-open http://127.0.0.1:8080 || true
@@ -61,10 +64,15 @@ if [ "$action" = doctor ]; then
   [ -n "$uv" ] || { echo "uv is missing. Run ./run.sh once." >&2; exit 1; }
   exec "$uv" run --frozen --no-sync creature-lab doctor
 fi
+install_lock
+install_require_space "$PWD" 3
 [ -n "$uv" ] || uv=$(install_uv)
-[ "$action" = repair ] && retry "dependency repair" "$uv" sync --frozen --reinstall --extra sim --extra viz
+sync_args=(sync --frozen --extra sim --extra viz)
+[ "$action" = repair ] && sync_args+=(--reinstall)
+install_retry "dependency synchronization" "$uv" "${sync_args[@]}"
+install_complete
 
-args=(run --python 3.11 --frozen python scripts/start.py)
+args=(run --python 3.11 --frozen --no-sync python scripts/start.py --skip-sync)
 [ "$no_browser" -eq 1 ] && args+=(--no-open-browser)
 args+=("${forward[@]}")
 exec "$uv" "${args[@]}"

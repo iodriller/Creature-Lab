@@ -40,6 +40,10 @@ The launcher accepts `doctor`, `repair`, `docker`, `logs`, and `stop`, and
 reuses a current locked environment on later runs. Docker binds the editor to
 loopback and preserves runs and outputs in named volumes.
 
+Setup checks disk space, prevents concurrent environment changes, and retries
+temporary network failures up to three times. Failures are recorded in
+`.setup/install.log`.
+
 A terminal shows setup progress and an editor URL such as `http://localhost:8080`. Pick a
 preset, tune it, click **Simulate** to run it through the physics pipeline and read its
 score/diagnosis and a robustness sweep in the same panel, then **Save** to write a normal
