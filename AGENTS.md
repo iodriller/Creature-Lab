@@ -21,9 +21,17 @@ shape of the whole project.
 
 Use the launcher from a checkout:
 
-```bash
-python scripts/start.py
+```powershell
+.\run.bat
 ```
+
+```bash
+./run.command  # macOS
+./run.sh       # Linux
+```
+
+Use `python scripts/start.py` for editor-specific development options after
+the root launcher has prepared the environment.
 
 Manual first run:
 

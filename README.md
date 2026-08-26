@@ -34,6 +34,8 @@ run it, instead of jumping straight into physics.
 ./run.sh       # Linux
 ```
 
+Use `.\run.ps1` from PowerShell.
+
 The launcher accepts `doctor`, `repair`, `docker`, `logs`, and `stop`, and
 reuses a current locked environment on later runs. Docker binds the editor to
 loopback and preserves runs and outputs in named volumes.

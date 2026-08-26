@@ -24,20 +24,22 @@ uv run creature-lab report latest
 
 ## Launcher Scripts
 
-The launcher is the recommended first command from a repo checkout:
+The root launcher is the recommended first command from a repo checkout:
+
+```powershell
+.\run.bat
+```
+
+```bash
+./run.command  # macOS
+./run.sh       # Linux
+```
+
+Use `.\run.ps1` from PowerShell. The lower-level launcher below exposes
+editor-specific options after the environment is installed:
 
 ```bash
 python scripts/start.py
-```
-
-Wrappers are available for common shells:
-
-```powershell
-.\scripts\start.ps1
-```
-
-```bash
-bash scripts/start.sh
 ```
 
 Useful options:

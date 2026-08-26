@@ -6,14 +6,20 @@ This guide is the shortest path from a fresh clone to a moving creature.
 
 Use the launcher from the repository root:
 
-```bash
-python scripts/start.py
+```powershell
+.\run.bat
 ```
 
-On Windows PowerShell:
+```bash
+./run.command  # macOS
+./run.sh       # Linux
+```
 
-```powershell
-.\scripts\start.ps1
+The first run installs what it needs; later runs reuse the current environment.
+For direct control of the build editor after installation, use:
+
+```bash
+python scripts/start.py
 ```
 
 The launcher installs the starter dependencies, runs `doctor`, and opens the interactive
